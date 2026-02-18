@@ -1,0 +1,475 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "User Professional Profile",
+    "description": "Complete professional identity for job application automation",
+    "type": "object",
+    "required": [
+        "personal_info",
+        "work_experience",
+        "skills"
+    ],
+    "properties": {
+        "personal_info": {
+            "type": "object",
+            "required": [
+                "full_name",
+                "email"
+            ],
+            "properties": {
+                "full_name": {
+                    "type": "string",
+                    "description": "Full legal name"
+                },
+                "email": {
+                    "type": "string",
+                    "format": "email"
+                },
+                "phone": {
+                    "type": "string",
+                    "pattern": "^[+]?[0-9]{10,15}$"
+                },
+                "location": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string"
+                        },
+                        "state": {
+                            "type": "string"
+                        },
+                        "country": {
+                            "type": "string"
+                        },
+                        "postal_code": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "linkedin": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "github": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "portfolio": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "professional_headline": {
+                    "type": "string",
+                    "description": "One-line professional summary (e.g., 'Senior Full-Stack Engineer specializing in AI/ML')"
+                }
+            }
+        },
+        "work_experience": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "company",
+                    "title",
+                    "start_date"
+                ],
+                "properties": {
+                    "company": {
+                        "type": "string"
+                    },
+                    "title": {
+                        "type": "string"
+                    },
+                    "employment_type": {
+                        "type": "string",
+                        "enum": [
+                            "full-time",
+                            "part-time",
+                            "contract",
+                            "freelance",
+                            "internship"
+                        ]
+                    },
+                    "location": {
+                        "type": "string"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "format": "date",
+                        "description": "Null or omitted if current position"
+                    },
+                    "current": {
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Role overview"
+                    },
+                    "achievements": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Bullet points of impact/achievements"
+                    },
+                    "technologies": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Tech stack used in this role"
+                    }
+                }
+            }
+        },
+        "education": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "institution",
+                    "degree"
+                ],
+                "properties": {
+                    "institution": {
+                        "type": "string"
+                    },
+                    "degree": {
+                        "type": "string",
+                        "description": "e.g., Bachelor of Science, Master's"
+                    },
+                    "field_of_study": {
+                        "type": "string",
+                        "description": "e.g., Computer Science"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "gpa": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 4.0
+                    },
+                    "honors": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Dean's list, cum laude, etc."
+                    }
+                }
+            }
+        },
+        "skills": {
+            "type": "object",
+            "properties": {
+                "technical": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "name",
+                            "proficiency"
+                        ],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Skill name (e.g., Python, React)"
+                            },
+                            "proficiency": {
+                                "type": "string",
+                                "enum": [
+                                    "beginner",
+                                    "intermediate",
+                                    "advanced",
+                                    "expert"
+                                ]
+                            },
+                            "years_of_experience": {
+                                "type": "number",
+                                "minimum": 0
+                            },
+                            "last_used": {
+                                "type": "string",
+                                "format": "date",
+                                "description": "When this skill was last actively used"
+                            }
+                        }
+                    }
+                },
+                "soft_skills": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Leadership, communication, problem-solving, etc."
+                },
+                "languages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "language": {
+                                "type": "string"
+                            },
+                            "proficiency": {
+                                "type": "string",
+                                "enum": [
+                                    "basic",
+                                    "conversational",
+                                    "professional",
+                                    "native"
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "certifications": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "issuing_organization"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Certificate name"
+                    },
+                    "issuing_organization": {
+                        "type": "string"
+                    },
+                    "issue_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "expiration_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "credential_id": {
+                        "type": "string"
+                    },
+                    "credential_url": {
+                        "type": "string",
+                        "format": "uri"
+                    },
+                    "verification_document": {
+                        "type": "string",
+                        "description": "Path to uploaded certificate file"
+                    }
+                }
+            }
+        },
+        "projects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [
+                    "name",
+                    "description"
+                ],
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Your role in the project"
+                    },
+                    "technologies": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    },
+                    "url": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "GitHub repo, demo site, etc."
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "highlights": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "description": "Key achievements or metrics"
+                    }
+                }
+            }
+        },
+        "achievements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string"
+                    },
+                    "description": {
+                        "type": "string"
+                    },
+                    "date": {
+                        "type": "string",
+                        "format": "date"
+                    },
+                    "issuer": {
+                        "type": "string",
+                        "description": "Who recognized this achievement"
+                    }
+                }
+            },
+            "description": "Awards, publications, speaking engagements, etc."
+        },
+        "preferences": {
+            "type": "object",
+            "description": "Job search preferences",
+            "properties": {
+                "desired_roles": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Target job titles"
+                },
+                "desired_locations": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Preferred cities or 'Remote'"
+                },
+                "remote_preference": {
+                    "type": "string",
+                    "enum": [
+                        "remote-only",
+                        "hybrid",
+                        "on-site",
+                        "flexible"
+                    ]
+                },
+                "salary_expectations": {
+                    "type": "object",
+                    "properties": {
+                        "minimum": {
+                            "type": "number"
+                        },
+                        "desired": {
+                            "type": "number"
+                        },
+                        "currency": {
+                            "type": "string",
+                            "default": "USD"
+                        }
+                    }
+                },
+                "company_size_preference": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "startup",
+                            "small",
+                            "medium",
+                            "large",
+                            "enterprise"
+                        ]
+                    }
+                },
+                "industry_preference": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Preferred industries (e.g., fintech, healthcare, climate)"
+                },
+                "must_have_keywords": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Keywords that MUST appear in job description"
+                },
+                "deal_breakers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Keywords that disqualify a job (e.g., 'crypto', 'gambling')"
+                },
+                "required_languages": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Languages that job must support (e.g., 'English', 'Spanish'). If empty, no language filtering is applied.",
+                    "examples": [
+                        [
+                            "English"
+                        ],
+                        [
+                            "English",
+                            "Spanish"
+                        ],
+                        [
+                            "French"
+                        ]
+                    ]
+                }
+            }
+        },
+        "metadata": {
+            "type": "object",
+            "properties": {
+                "profile_version": {
+                    "type": "string",
+                    "default": "1.0"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "source_documents": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Paths to uploaded CV/certificate files"
+                },
+                "ai_confidence_score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "AI's confidence in profile completeness/accuracy"
+                }
+            }
+        }
+    }
+}

@@ -51,7 +51,7 @@ async def launch_linkedin_browser():
     context_args = {
         "user_data_dir": USER_DATA_DIR,
         "headless": False,  # Must be visible for "Assisted" automation
-        "args": ["--start-maximized"],
+        "args": ["--start-maximized", "--disable-blink-features=AutomationControlled"],
         "no_viewport": True
     }
     
@@ -363,6 +363,9 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
             submit_btn = await page.query_selector('button[aria-label="Submit application"]')
             if submit_btn:
                 print("🛑 Final step reached. Clicking submit and verifying...")
+                if dry_run:
+                    return {"status": "success", "message": "Dry Run: Reached Submit button."}
+
                 await submit_btn.click()
                 _applies_today += 1 # Count it as an attempt
                 
@@ -543,10 +546,15 @@ async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str) 
                 if row:
                     print(f"🧠 Fuzzy match: '{label_text}' ~ '{best_match}' ({score}%)")
                     ans = row['answer_text']
-                    if row.get('category') in ['salary', 'visa', 'sensitive']:
+                    
+                    # Decryption Check - correctly extract decrypted value
+                    if ans.startswith("gAAAAA") or row.get('category') in ['salary', 'visa', 'sensitive']:
                         try:
-                            ans = decrypt_value(ans) or ans
-                        except: pass
+                            decrypted = decrypt_value(ans)
+                            if decrypted:
+                                ans = decrypted
+                        except Exception as e:
+                            print(f"Failed to decrypt: {e}")
                     return str(ans)
         return None
 

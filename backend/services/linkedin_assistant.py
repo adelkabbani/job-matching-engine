@@ -9,6 +9,9 @@ import random
 import time
 from typing import List, Dict, Optional
 from playwright.async_api import async_playwright, BrowserContext, Page
+from playwright_stealth import stealth_async
+from thefuzz import process
+from utils.encryption import encrypt_value, decrypt_value
 from services.job_matcher import get_user_skills, extract_skills_from_description, generate_match_report
 from services.job_scraper import apply_filters
 
@@ -44,16 +47,28 @@ async def launch_linkedin_browser():
 
     _playwright = await async_playwright().start()
     
+    proxy_server = os.getenv("LINKEDIN_PROXY_SERVER")
+    context_args = {
+        "user_data_dir": USER_DATA_DIR,
+        "headless": False,  # Must be visible for "Assisted" automation
+        "args": ["--start-maximized"],
+        "no_viewport": True
+    }
+    
+    if proxy_server:
+        context_args["proxy"] = {
+            "server": proxy_server,
+            "username": os.getenv("LINKEDIN_PROXY_USER", ""),
+            "password": os.getenv("LINKEDIN_PROXY_PASS", "")
+        }
+        print("🛡️ Residential proxy configured.")
+
     # Using persistent context to save cookies/session
-    _browser_context = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=USER_DATA_DIR,
-        headless=False,  # Must be visible for "Assisted" automation
-        args=["--start-maximized"],
-        no_viewport=True
-    )
+    _browser_context = await _playwright.chromium.launch_persistent_context(**context_args)
     
     # Open LinkedIn as initial page
     page = await _browser_context.new_page()
+    await stealth_async(page)
     await page.goto("https://www.linkedin.com/login")
     
     print(f"🚀 LinkedIn Assistant launched. Profile saved in: {USER_DATA_DIR}")
@@ -305,6 +320,9 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         if not job_url:
              return {"status": "error", "message": "Job URL not found."}
 
+        # Apply stealth to the job page
+        await stealth_async(page)
+
         if page.url != job_url:
             await page.goto(job_url, wait_until="domcontentloaded")
             await asyncio.sleep(2)
@@ -338,14 +356,40 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
             if not modal:
                 break # Modal closed or finished
                 
+            # Snapshot fields BEFORE filling to see what's blank
+            blank_fields = await _extract_form_state(page)
+
             # Check for "Submit application" button (Final Step)
             submit_btn = await page.query_selector('button[aria-label="Submit application"]')
             if submit_btn:
-                print("🛑 Final step reached. Stopping for user review.")
+                print("🛑 Final step reached. Clicking submit and verifying...")
+                await submit_btn.click()
                 _applies_today += 1 # Count it as an attempt
-                return {"status": "success", "message": "Final step reached. Please review and click Submit (Final confirmation is YOURS)."}
+                
+                try:
+                    await page.wait_for_selector('h3:has-text("Application submitted"), .artdeco-modal__header:has-text("Application submitted"), [data-test-modal-id="postApplyModal"]', timeout=8000)
+                    print("✅ Application successfully submitted! Logging to tracker.")
+                    supabase.table("applications").insert({
+                        "user_id": user_id,
+                        "job_id": job_id,
+                        "company": job.get("company", "Unknown"),
+                        "role_title": job.get("title", "Unknown"),
+                        "status": "applied",
+                        "match_score": job.get("match_score", 0)
+                    }).execute()
+                    
+                    supabase.table("jobs").update({"status": "applied"}).eq("id", job_id).execute()
+                    
+                    close_btn = await page.query_selector('button[aria-label="Dismiss"]')
+                    if close_btn: await close_btn.click()
+                    
+                    return {"status": "success", "message": "Application submitted automatically."}
+                except Exception as e:
+                    print(f"Submission verification failed: {e}")
+                    return {"status": "warning", "message": "Clicked Submit, but could not verify success."}
             
             # Fill current step's fields
+            current_state_before = await _extract_form_state(page)
             skipped_fields = await _fill_modal_fields(page, profile, supabase, user_id)
             
             if dry_run:
@@ -355,9 +399,35 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
             next_btn = await page.query_selector('button[aria-label*="Next"], button[aria-label*="Review"]')
             if next_btn:
                 # Add randomized delay for human-like behavior
-                await asyncio.sleep(random.uniform(2.5, 5.5))
+                await asyncio.sleep(random.uniform(2.5, 4.0))
                 await next_btn.click()
                 await asyncio.sleep(2.0)
+                
+                # Check for Form Errors -> enter "Learning Mode"
+                error_els = await page.query_selector_all('.artdeco-inline-feedback--error')
+                if error_els:
+                    print(f"⚠️ Form errors detected ({len(error_els)}). Waiting for human to fill fields and click Next...")
+                    # Poll until user clicks Next or resolves it
+                    waited = 0
+                    while waited < 60:
+                        temp_state = await _extract_form_state(page)
+                        if temp_state:
+                            current_state_after = temp_state
+                            
+                        modal_active = await page.query_selector('.artdeco-inline-feedback--error')
+                        if not modal_active:
+                            # User fixed the errors!
+                            print("✅ Human intervention resolved error. Learning...")
+                            await _learn_new_answers(current_state_before, current_state_after, supabase, user_id)
+                            break
+                        
+                        await asyncio.sleep(2)
+                        waited += 2
+                        
+                    if waited >= 60:
+                        return {"status": "error", "message": "Timed out waiting for human intervention."}
+                    
+                    await asyncio.sleep(2.0)
             else:
                 # Might be a custom question step or at the end
                 break
@@ -370,58 +440,172 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         print(f"Error during autofill: {e}")
         return {"status": "error", "message": str(e)}
 
+async def _extract_form_state(page: Page) -> Dict[str, str]:
+    """Scrapes current visible fields and their values to track human changes."""
+    state = {}
+    
+    # Inputs & Textareas
+    inputs = await page.query_selector_all('input[type="text"], input:not([type]), textarea')
+    for el in inputs:
+        label = await _get_label_for_element(page, el)
+        val = await el.input_value()
+        if label: state[label] = val
+        
+    # Dropdowns (select)
+    selects = await page.query_selector_all('select')
+    for el in selects:
+        label = await _get_label_for_element(page, el)
+        val = await page.evaluate('(sel) => sel.options[sel.selectedIndex]?.text || ""', el)
+        if label: state[label] = val
+        
+    # Radio buttons
+    fieldsets = await page.query_selector_all('fieldset')
+    for fs in fieldsets:
+        legend = await fs.query_selector('legend')
+        if not legend: continue
+        label = await legend.inner_text()
+        checked = await fs.query_selector('input[type="radio"]:checked')
+        if checked:
+            radio_id = await checked.get_attribute('id')
+            radiolab = await page.query_selector(f'label[for="{radio_id}"]')
+            state[label.strip()] = await radiolab.inner_text() if radiolab else "Yes"
+
+    return state
+
+async def _get_label_for_element(page: Page, el) -> str:
+    label_id = await el.get_attribute('id')
+    if label_id:
+        label_el = await page.query_selector(f'label[for="{label_id}"]')
+        if label_el: return await label_el.inner_text()
+    return (await el.get_attribute('aria-label')) or ""
+
+async def _learn_new_answers(before: Dict[str, str], after: Dict[str, str], supabase, user_id: str):
+    """Detects what changed after human intervention and saves it to the Question Bank."""
+    for label, new_val in after.items():
+        old_val = before.get(label, "")
+        if new_val and new_val != old_val:
+            print(f"📖 Learning new answer: '{label}' -> '{new_val}'")
+            
+            # Determine category based on keywords
+            cat = 'general'
+            l = label.lower()
+            if 'salary' in l or 'pay' in l or 'compensation' in l: cat = 'salary'
+            elif 'visa' in l or 'sponsor' in l or 'citizen' in l: cat = 'visa'
+            elif 'experience' in l or 'years' in l: cat = 'experience'
+            
+            # Encrypt if sensitive
+            save_val = new_val
+            if cat in ['salary', 'visa'] or any(kw in l for kw in SENSITIVE_KEYWORDS):
+                try:
+                    save_val = encrypt_value(save_val)
+                    cat = 'sensitive'
+                except Exception as e:
+                    print(f"Failed to encrypt: {e}. Skipping sensitive data learning.")
+                    return
+                
+            try:
+                # Upsert query directly
+                supabase.table("linkedin_question_bank").upsert({
+                    "user_id": user_id,
+                    "question_text": label.strip(),
+                    "answer_text": save_val,
+                    "category": cat
+                }).execute()
+            except Exception as e:
+                print(f"Failed to save learned answer: {e}")
+
 async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str) -> List[str]:
     """Detects and fills form fields in the current modal state."""
-    from difflib import SequenceMatcher
-    
     skipped = []
     
-    # 1. Handle Text Inputs
-    inputs = await page.query_selector_all('input[type="text"], input:not([type]), textarea')
-    for input_el in inputs:
-        label_id = await input_el.get_attribute('id')
-        label_text = ""
-        if label_id:
-            label_el = await page.query_selector(f'label[for="{label_id}"]')
-            if label_el:
-                label_text = await label_el.inner_text()
-        
-        if not label_text:
-            label_text = (await input_el.get_attribute('aria-label')) or ""
-
-        # SENSITIVE FIELD PROTECTION
+    # 1. Fetch Question Bank once
+    qb_res = supabase.table("linkedin_question_bank").select("*").eq("user_id", user_id).execute()
+    qb_data = qb_res.data or []
+    qb_questions = [row['question_text'] for row in qb_data]
+    
+    # Helper to find answer
+    def find_answer(label_text: str) -> Optional[str]:
+        if not label_text: return None
+        # Sensitive Protection
         if any(kw in label_text.lower() for kw in SENSITIVE_KEYWORDS):
-            print(f"⚠️ Sensitive field detected: '{label_text}'. Skipping.")
+            print(f"⚠️ Sensitive field detected: '{label_text}'. Skipping to force human review.")
             skipped.append(label_text)
-            continue
-
-        # Map to profile
+            return None
+            
         val = _map_label_to_value(label_text, profile)
-        if val:
-            await input_el.fill(str(val))
-            await asyncio.sleep(random.uniform(0.5, 1.2)) # Real-time-ish typing delay
-        else:
-            # FUZZY QUESTION MATCHING
-            qb_res = supabase.table("linkedin_question_bank").select("*").eq("user_id", user_id).execute()
-            best_match = None
-            max_ratio = 0
-            
-            for row in qb_res.data:
-                ratio = SequenceMatcher(None, label_text.lower(), row['question_text'].lower()).ratio()
-                if ratio > max_ratio:
-                    max_ratio = ratio
-                    best_match = row
-            
-            if best_match and max_ratio > 0.8:
-                print(f"🧠 Fuzzy match found: '{label_text}' ~ '{best_match['question_text']}' ({max_ratio*100:.1f}%)")
-                await input_el.fill(best_match['answer_text'])
+        if val: return val
+        
+        # FUZZY MATCHING
+        if qb_questions:
+            best_match, score = process.extractOne(label_text, qb_questions)
+            if score > 80:
+                row = next((r for r in qb_data if r['question_text'] == best_match), None)
+                if row:
+                    print(f"🧠 Fuzzy match: '{label_text}' ~ '{best_match}' ({score}%)")
+                    ans = row['answer_text']
+                    if row.get('category') in ['salary', 'visa', 'sensitive']:
+                        try:
+                            ans = decrypt_value(ans) or ans
+                        except: pass
+                    return str(ans)
+        return None
+
+    # Handle Text Inputs & Textareas
+    inputs = await page.query_selector_all('input[type="text"], input:not([type]), textarea')
+    for el in inputs:
+        label = await _get_label_for_element(page, el)
+        ans = find_answer(label)
+        if ans:
+            await el.fill(str(ans))
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+
+    # Handle Select Dropdowns
+    selects = await page.query_selector_all('select')
+    for el in selects:
+        label = await _get_label_for_element(page, el)
+        ans = find_answer(label)
+        if ans:
+            try:
+                await el.select_option(label=ans)
                 await asyncio.sleep(0.5)
+            except:
+                try: 
+                    await el.select_option(value=ans)
+                    await asyncio.sleep(0.5)
+                except: pass
 
-    return skipped
+    # Handle Fieldsets (Radio/Checkboxes)
+    fieldsets = await page.query_selector_all('fieldset')
+    for fs in fieldsets:
+        legend = await fs.query_selector('legend')
+        if not legend: continue
+        label = await legend.inner_text()
+        ans = find_answer(label)
+        if ans:
+            radios = await fs.query_selector_all('input[type="radio"]')
+            for r in radios:
+                r_id = await r.get_attribute('id')
+                if not r_id: continue
+                rlab = await page.query_selector(f'label[for="{r_id}"]')
+                if rlab:
+                    rtext = await rlab.inner_text()
+                    if ans.lower() in rtext.lower() or rtext.lower() in ans.lower():
+                        await rlab.click()
+                        await asyncio.sleep(0.5)
+                        break
 
-    # 2. Handle Radio/Select (Experience, Visa, etc.)
-    # This requires more complex mapping, for now we fill text fields.
-    pass
+    # Handle lone checkboxes
+    checkboxes = await page.query_selector_all('input[type="checkbox"]')
+    for cb in checkboxes:
+        cb_id = await cb.get_attribute('id')
+        if cb_id:
+            cblab = await page.query_selector(f'label[for="{cb_id}"]')
+            if cblab:
+                ltext = await cblab.inner_text()
+                if "terms" in ltext.lower() or "agree" in ltext.lower() or "acknowledge" in ltext.lower():
+                    await cblab.click()
+
+    return list(set(skipped))
 
 def _map_label_to_value(label: str, profile: Dict) -> Optional[str]:
     """Basic mapping of LinkedIn labels to our profile data."""

@@ -318,4 +318,77 @@ def generate_cover_letter(
         return result['choices'][0]['message']['content'].strip()
     except Exception as e:
         print(f"Cover Letter Generation Error: {e}")
-        raise Exception(f"Failed to generate cover letter: {{str(e)}}")
+        raise Exception(f"Failed to generate cover letter: {str(e)}")
+
+def generate_search_keywords(profile_data: Dict, api_key: str) -> list[str]:
+    """
+    Generates tailored LinkedIn search queries based on the user profile.
+    Returns a list of 5-10 optimized search strings.
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "HyperApply",
+        "Content-Type": "application/json"
+    }
+
+    skills = profile_data.get("skills", [])
+    experience_level = profile_data.get("experience_level", "Entry Level")
+    
+    # Extract locations from preferences or default to Berlin as per directive
+    prefs = profile_data.get("preferences", {})
+    locations = prefs.get("desired_locations", ["Berlin"])
+    location_str = " or ".join(locations)
+
+    system_prompt = """
+    You are an expert Technical Recruiter and Boolean Search Master.
+    Your goal is to generate high-precision LinkedIn search queries for a candidate.
+    
+    RULES:
+    1. Focus on the candidate's STRONGEST skills.
+    2. Combine Role + Skill + Location + Language (if implicit).
+    3. Target the specific Experience Level requesting (Entry Level / Junior).
+    4. Return ONLY a raw JSON array of strings. No markdown.
+    5. Generate 5-10 distinct queries.
+    
+    Example Output:
+    ["Junior Python Developer Berlin", "Entry Level React Engineer Berlin English", ...]
+    """
+
+    user_prompt = f"""
+    Candidate Profile:
+    Skills: {', '.join(skills[:20])} ...
+    Experience Level: {experience_level}
+    Target Location: {location_str}
+    
+    Generate the search queries now.
+    """
+
+    payload = {
+        "model": DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.7
+    }
+
+    try:
+        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        content = result['choices'][0]['message']['content'].strip()
+        
+        # Cleanup markdown
+        if "```json" in content:
+            content = content.replace("```json", "").replace("```", "")
+        elif "```" in content:
+            content = content.replace("```", "")
+            
+        return json.loads(content)
+        
+    except Exception as e:
+        print(f"Keyword Generation Error: {e}")
+        # Fallback
+        return [f"Junior {s} Developer Berlin" for s in skills[:3]]
+

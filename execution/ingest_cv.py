@@ -3,9 +3,161 @@ import os
 import json
 import re
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Setup file logging
 log_path = Path(__file__).parent.parent / ".tmp" / "ingest_cv.log"
+def log(msg):
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(msg + "\n")
+    print(msg)
+
+log("Starting ingest_cv.py...")
+
+try:
+    import pdfplumber
+    import docx
+    # Import LLM service
+    sys.path.append(str(Path(__file__).parent.parent))
+    from backend.services.llm import extract_resume_data
+    log("Imports successful.")
+except Exception as e:
+    log(f"Import Error: {e}")
+    sys.exit(1)
+
+
+def extract_text_from_pdf(pdf_path):
+    """Extract text from a PDF file using pdfplumber."""
+    text = ""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+    except Exception as e:
+        log(f"Error reading PDF: {e}")
+    return text
+
+def extract_text_from_docx(docx_path):
+    """Extract text from a DOCX file."""
+    text = ""
+    try:
+        doc = docx.Document(docx_path)
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+    except Exception as e:
+        log(f"Error reading DOCX: {e}")
+    return text
+
+def ingest_cv(file_path):
+    path = Path(file_path)
+    if not path.exists():
+        log(f"Error: File not found: {file_path}")
+        return
+
+    log(f"Parsing {file_path}...")
+    
+    if path.suffix.lower() == '.pdf':
+        text = extract_text_from_pdf(file_path)
+    elif path.suffix.lower() == '.docx':
+        text = extract_text_from_docx(file_path)
+    else:
+        log("Unsupported file format. Please use PDF or DOCX.")
+        return
+
+    if not text:
+        log("Failed to extract text.")
+        return
+
+    # Call LLM for parsing
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        log("Error: OPENROUTER_API_KEY not found in .env")
+        return
+
+    log("Extracting structured data using LLM...")
+    try:
+        resume_data = extract_resume_data(text, api_key)
+        log("✅ LLM Extraction Successful.")
+    except Exception as e:
+        log(f"❌ LLM Parsing Failed: {e}")
+        return
+
+    # Load existing profile
+    profile_path = Path(__file__).parent.parent / ".tmp" / "user_profile.json"
+    if profile_path.exists():
+        with open(profile_path, 'r', encoding='utf-8') as f:
+            try:
+                profile = json.load(f)
+            except:
+                profile = {}
+    else:
+        profile = {}
+
+    # Merge Logic
+    # 1. Update Personal Info
+    if "personal_info" not in profile: profile["personal_info"] = {}
+    
+    new_info = resume_data.get("personal_info", {})
+    # Only update empty fields to preserve manual edits if any
+    for k, v in new_info.items():
+        if v and not profile["personal_info"].get(k):
+             profile["personal_info"][k] = v
+
+    # 2. Update Skills (Union)
+    current_skills = set(profile.get("skills", []))
+    new_skills = set(resume_data.get("skills", {}).get("technical", []))
+    # Add other skill categories if present
+    new_skills.update(resume_data.get("skills", {}).get("soft", []))
+    new_skills.update(resume_data.get("skills", {}).get("tools", []))
+    
+    current_skills.update(new_skills)
+    profile["skills"] = list(current_skills)
+
+    # 3. Update Education (Append unique)
+    if "education" not in profile: profile["education"] = []
+    new_education = resume_data.get("education", [])
+    
+    # Simple check to avoid exact duplicates
+    existing_edu_str = [json.dumps(e, sort_keys=True) for e in profile["education"]]
+    for edu in new_education:
+        if json.dumps(edu, sort_keys=True) not in existing_edu_str:
+             profile["education"].append(edu)
+
+    # 4. Update Experience
+    if "work_experience" not in profile: profile["work_experience"] = []
+    # Similar append logic could go here, for now just replace if empty or append
+    if resume_data.get("work_experience"):
+         # For simplicity in this phase, we append new found ones
+         profile["work_experience"].extend(resume_data["work_experience"])
+
+    # 5. Projects
+    if "projects" not in profile: profile["projects"] = []
+    if resume_data.get("projects"):
+        profile["projects"].extend(resume_data["projects"])
+
+    # 6. Metadata
+    profile["experience_level"] = resume_data.get("experience_level", "Entry Level")
+
+    # Save
+    with open(profile_path, 'w', encoding='utf-8') as f:
+        json.dump(profile, f, indent=2, ensure_ascii=False)
+        
+    log(f"\n✅ Profile updated at {profile_path}")
+    log(f"Skills Count: {len(profile['skills'])}")
+    log(f"Experience Level: {profile['experience_level']}")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        log("Usage: python execution/ingest_cv.py <path_to_cv>")
+        sys.exit(1)
+    
+    ingest_cv(sys.argv[1])
+
 def log(msg):
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(msg + "\n")

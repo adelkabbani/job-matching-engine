@@ -1,22 +1,5 @@
 """
-Job Filtering System
-
-Filters discovered jobs based on user preferences:
-- Desired locations (cities, countries, remote)
-- Language requirements
-- Salary expectations
-- Must-have keywords
-- Deal-breakers
-
-Usage:
-    python execution/filter_jobs.py
-    
-Reads:
-    - .tmp/user_profile.json (preferences)
-    - .tmp/jobs_found.json (all discovered jobs)
-    
-Outputs:
-    - .tmp/jobs_filtered.json (jobs matching preferences)
+Job Filtering System - Strict Mode for Berlin/English/Entry-Level
 """
 
 import json
@@ -25,8 +8,149 @@ import os
 from pathlib import Path
 import re
 
-
 def load_profile():
+    profile_path = Path(__file__).parent.parent / ".tmp" / "user_profile.json"
+    if not profile_path.exists():
+        print("Profile not found. Run 'python execution/ingest_cv.py' first.")
+        sys.exit(1)
+    with open(profile_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def load_jobs():
+    jobs_path = Path(__file__).parent.parent / ".tmp" / "jobs_found.json"
+    if not jobs_path.exists():
+        print("No jobs found. Run job discovery first.")
+        sys.exit(1)
+    with open(jobs_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def matches_location_strict(job, desired_city="Berlin"):
+    """Strictly enforce Berlin."""
+    # Check structured location field
+    loc = job.get("location", "").lower()
+    
+    # Check text content if location field is vague
+    text = (job.get("title", "") + " " + job.get("description", "")).lower()
+    
+    if desired_city.lower() in loc:
+        return True
+    
+    # Logic: If 'Berlin' is strictly required, it MUST appear in location or title
+    if desired_city.lower() in text and "remote" not in loc:
+        return True
+        
+    # Allow fully remote
+    if "remote" in loc and "germany" in loc: # Remote in Germany is usually fine
+        return True
+        
+    return False
+
+def matches_language_strict(job):
+    """
+    STRICTLY reject German jobs. 
+    Accept only if English is primary or explicitly stated as "No German required".
+    """
+    text = (job.get("title", "") + " " + job.get("description", "")).lower()
+    
+    # 1. Immediate rejection keywords (German fluency indicators)
+    german_flags = [
+        "fließend deutsch", "german language required", "german level c1", "german level c2",
+        "deutschkenntnisse", "fluent in german", "german native", "muttersprache deutsch",
+        "excellent german knowledge", "schreiben und sprechen auf deutsch"
+    ]
+    
+    for flag in german_flags:
+        if flag in text:
+            # Check for negation "not required" but that's risky with simple regex
+            if "no " + flag in text or "not " + flag in text:
+                continue
+            return False, f"Rejected: Requires '{flag}'"
+            
+    # 2. Heuristic: If description is > 50% German words, reject.
+    # Simple check: count common German words vs English words
+    german_common = ["und", "der", "die", "das", "mit", "für", "ist", "wir", "suchen"]
+    english_common = ["and", "the", "with", "for", "is", "we", "looking", "software", "development"]
+    
+    g_count = sum(1 for w in german_common if f" {w} " in text)
+    e_count = sum(1 for w in english_common if f" {w} " in text)
+    
+    if g_count > e_count and g_count > 2:
+        return False, "Rejected: Description appears to be in German"
+        
+    return True, "English Safe"
+
+def matches_level_strict(job):
+    """Reject Senior/Lead roles for Entry Level candidates."""
+    title = job.get("title", "").lower()
+    
+    seniors = ["senior", "lead", "principal", "manager", "architect", "head of", "director"]
+    # exception: "junior manager"
+    
+    for level in seniors:
+        if level in title:
+            if "junior" in title or "assistant" in title:
+                continue
+            return False, f"Rejected: Seniority '{level}'"
+            
+    return True, "Level Safe"
+
+def filter_jobs(jobs, profile):
+    filtered_jobs = []
+    
+    print("\n--- Filtering Log ---")
+    
+    for job in jobs:
+        # 1. Location Matching
+        if not matches_location_strict(job, "Berlin"):
+            continue
+            
+        # 2. Level Matching
+        level_ok, level_msg = matches_level_strict(job)
+        if not level_ok:
+            # print(f"Skipping {job['title']}: {level_msg}")
+            continue
+            
+        # 3. Language Matching (Most expensive/strict)
+        lang_ok, lang_msg = matches_language_strict(job)
+        if not lang_ok:
+            print(f"Skipping {job['title']}: {lang_msg}")
+            continue
+            
+        # Passed all checks
+        job["match_reasons"] = ["Location: Berlin", "Language: English", "Level: Entry/Junior"]
+        filtered_jobs.append(job)
+        
+    return filtered_jobs
+
+def save_filtered_jobs(jobs):
+    output_dir = Path(__file__).parent.parent / ".tmp"
+    output_path = output_dir / "jobs_filtered.json"
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(jobs, f, indent=2, ensure_ascii=False)
+    
+    return output_path
+
+def main():
+    profile = load_profile()
+    jobs = load_jobs()
+    
+    print(f"Processing {len(jobs)} jobs against strict filters (Berlin / English / Entry)...")
+    
+    filtered = filter_jobs(jobs, profile)
+    output_path = save_filtered_jobs(filtered)
+    
+    print(f"\n✅ Retained {len(filtered)} / {len(jobs)} jobs.")
+    print(f"Results saved to: {output_path}")
+
+    if filtered:
+        print("\nTop Matches:")
+        for i, job in enumerate(filtered[:5], 1):
+            print(f"{i}. {job['title']} @ {job['company']}")
+
+if __name__ == "__main__":
+    main()
+
     """Load user profile with preferences."""
     profile_path = Path(__file__).parent.parent / ".tmp" / "user_profile.json"
     

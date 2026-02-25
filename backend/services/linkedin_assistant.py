@@ -9,7 +9,7 @@ import random
 import time
 from typing import List, Dict, Optional
 from playwright.async_api import async_playwright, BrowserContext, Page
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from thefuzz import process
 from utils.encryption import encrypt_value, decrypt_value
 from services.job_matcher import get_user_skills, extract_skills_from_description, generate_match_report
@@ -68,7 +68,7 @@ async def launch_linkedin_browser():
     
     # Open LinkedIn as initial page
     page = await _browser_context.new_page()
-    await stealth_async(page)
+    await Stealth().apply_stealth_async(page)
     await page.goto("https://www.linkedin.com/login")
     
     print(f"🚀 LinkedIn Assistant launched. Profile saved in: {USER_DATA_DIR}")
@@ -321,7 +321,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
              return {"status": "error", "message": "Job URL not found."}
 
         # Apply stealth to the job page
-        await stealth_async(page)
+        await Stealth().apply_stealth_async(page)
 
         if page.url != job_url:
             await page.goto(job_url, wait_until="domcontentloaded")
@@ -393,7 +393,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
             
             # Fill current step's fields
             current_state_before = await _extract_form_state(page)
-            skipped_fields = await _fill_modal_fields(page, profile, supabase, user_id)
+            skipped_fields = await _fill_modal_fields(page, profile, supabase, user_id, job)
             
             if dry_run:
                 return {"status": "success", "message": f"Dry Run: Fields filled. Skipped: {', '.join(skipped_fields) if skipped_fields else 'None'}"}
@@ -517,7 +517,7 @@ async def _learn_new_answers(before: Dict[str, str], after: Dict[str, str], supa
             except Exception as e:
                 print(f"Failed to save learned answer: {e}")
 
-async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str) -> List[str]:
+async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str, job: Dict = None) -> List[str]:
     """Detects and fills form fields in the current modal state."""
     skipped = []
     
@@ -526,6 +526,21 @@ async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str) 
     qb_data = qb_res.data or []
     qb_questions = [row['question_text'] for row in qb_data]
     
+    def _calc_exp() -> str:
+        work_exp = profile.get('work_experience', [])
+        years = 0
+        if isinstance(work_exp, list) and work_exp:
+            try:
+                first_job = work_exp[-1]
+                if 'start_date' in first_job:
+                    start_yr = int(str(first_job['start_date'])[:4])
+                    years = max(1, 2026 - start_yr)
+            except: pass
+        if years == 0:
+            skills = profile.get('skills', [])
+            years = max(1, len(skills) // 2) if isinstance(skills, list) else 3
+        return str(years)
+
     # Helper to find answer
     def find_answer(label_text: str) -> Optional[str]:
         if not label_text: return None
@@ -535,28 +550,31 @@ async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str) 
             skipped.append(label_text)
             return None
             
-        val = _map_label_to_value(label_text, profile)
-        if val: return val
+        ans = _map_label_to_value(label_text, profile)
         
         # FUZZY MATCHING
-        if qb_questions:
+        if not ans and qb_questions:
             best_match, score = process.extractOne(label_text, qb_questions)
             if score > 80:
                 row = next((r for r in qb_data if r['question_text'] == best_match), None)
                 if row:
                     print(f"🧠 Fuzzy match: '{label_text}' ~ '{best_match}' ({score}%)")
                     ans = row['answer_text']
-                    
-                    # Decryption Check - correctly extract decrypted value
-                    if ans.startswith("gAAAAA") or row.get('category') in ['salary', 'visa', 'sensitive']:
-                        try:
-                            decrypted = decrypt_value(ans)
-                            if decrypted:
-                                ans = decrypted
-                        except Exception as e:
-                            print(f"Failed to decrypt: {e}")
-                    return str(ans)
-        return None
+
+        # EXP MATH
+        if not ans and "years" in label_text.lower() and "experience" in label_text.lower():
+            ans = _calc_exp()
+            print(f"🧮 Auto-calculated experience: '{label_text}' -> {ans}")
+
+        # GLOBAL DECRYPTION FIX
+        if ans and isinstance(ans, str) and ans.startswith("gAAAAA"):
+            try:
+                decrypted = decrypt_value(ans)
+                if decrypted: ans = decrypted
+            except Exception as e:
+                print(f"Failed to decrypt: {e}")
+
+        return str(ans) if ans is not None else None
 
     # Handle Text Inputs & Textareas
     inputs = await page.query_selector_all('input[type="text"], input:not([type]), textarea')
@@ -612,6 +630,41 @@ async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str) 
                 ltext = await cblab.inner_text()
                 if "terms" in ltext.lower() or "agree" in ltext.lower() or "acknowledge" in ltext.lower():
                     await cblab.click()
+
+    # SMART RESUME SELECTOR
+    try:
+        file_inputs = await page.query_selector_all('input[type="file"]')
+        for el in file_inputs:
+            label = await _get_label_for_element(page, el)
+            is_resume = False
+            if label and ("resume" in label.lower() or "cv" in label.lower()):
+                is_resume = True
+            
+            # fallback based on accept attribute
+            if not is_resume:
+                accept = await el.get_attribute('accept')
+                if accept and ('pdf' in accept.lower() or 'doc' in accept.lower()):
+                    is_resume = True
+
+            if is_resume:
+                company_name = job.get("company", "Unknown") if job else "Unknown"
+                safe_company = "".join([c for c in company_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                
+                tailored_cv = os.path.join(os.getcwd(), ".tmp", "applications", safe_company, "tailored_cv.pdf")
+                default_cv = os.path.join(os.getcwd(), ".tmp", "default_cv.pdf")
+                
+                if os.path.exists(tailored_cv):
+                    print(f"📄 Found tailored CV for {company_name}")
+                    await el.set_input_files(tailored_cv)
+                    await asyncio.sleep(1)
+                elif os.path.exists(default_cv):
+                    print("📄 Using default CV")
+                    await el.set_input_files(default_cv)
+                    await asyncio.sleep(1)
+                else:
+                    print("⚠️ No CV found on disk!")
+    except Exception as e:
+        print(f"Failed to handle file uploads: {e}")
 
     return list(set(skipped))
 

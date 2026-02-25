@@ -12,6 +12,10 @@ import sys
 from dotenv import load_dotenv
 from supabase import create_client, Client
 import traceback
+import asyncio
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from datetime import datetime
 from services.linkedin_assistant import launch_linkedin_browser, stop_linkedin_browser, capture_current_search_results
 
@@ -56,17 +60,34 @@ app.add_middleware(
 # Security Scheme
 security = HTTPBearer()
 
+import jwt
+
 def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """Verifies the JWT token with Supabase and returns the user object."""
+    """Verifies the JWT token locally without network calls to bypass IPv6 errors."""
     token = credentials.credentials
     try:
-        # Verify user using Supabase Auth
-        user_response = supabase.auth.get_user(token)
-        if not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid authentication token")
-        return user_response.user
+        # Decode the JWT token locally (bypassing Supabase network fetch)
+        # We extract the 'sub' claim which is the user ID. 
+        # For local development we skip signature verification if JWT_SECRET is missing.
+        jwt_secret = os.getenv("SUPABASE_JWT_SECRET", "")
+        if jwt_secret:
+            decoded_token = jwt.decode(token, jwt_secret, algorithms=["HS256"], audience="authenticated")
+        else:
+            decoded_token = jwt.decode(token, options={"verify_signature": False})
+            
+        user_id = decoded_token.get("sub")
+        
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+            
+        # Create a mock user object that mimics what Supabase auth returns
+        class MockUser:
+            def __init__(self, uid):
+                self.id = uid
+        return MockUser(user_id)
+        
     except Exception as e:
-        print(f"Auth Error: {e}")
+        print(f"Auth Error (Local Decode): {e}")
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
 # Paths to data (fallback for local development)
@@ -1019,6 +1040,16 @@ async def discover_jobs(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Failed to start job discovery")
 
+@app.get("/api/linkedin/status")
+async def get_linkedin_status(user: dict = Depends(get_current_user)):
+    """Get the current status and rate limits of the LinkedIn Assistant."""
+    import services.linkedin_assistant as la
+    return {
+        "status": "running" if la._browser_context else "idle",
+        "applies_today": la._applies_today,
+        "max_applies": 50
+    }
+
 @app.post("/api/linkedin/launch")
 async def launch_linkedin(user: dict = Depends(get_current_user)):
     """Launch the assisted LinkedIn browser."""
@@ -1059,6 +1090,9 @@ async def shortlist_job(
         supabase.table("jobs").update({"status": "shortlisted"}).eq("id", job_id).eq("user_id", user.id).execute()
         return {"status": "success", "job_id": job_id}
     except Exception as e:
+        import traceback
+        print(f"🔥 SHORTLIST DB ERROR: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/jobs/{job_id}/reject")

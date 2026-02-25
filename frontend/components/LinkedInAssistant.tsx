@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Linkedin, Globe, Zap, MousePointer2, StopCircle, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -9,6 +9,32 @@ export default function LinkedInAssistant() {
     const [message, setMessage] = useState('Connect LinkedIn to start your assisted job search.');
     const [capturing, setCapturing] = useState(false);
     const [lastCaptureCount, setLastCaptureCount] = useState<number | null>(null);
+    const [appliesToday, setAppliesToday] = useState(0);
+    const [maxApplies, setMaxApplies] = useState(50);
+
+    const fetchStatus = async () => {
+        try {
+            const { createClient } = await import('@/utils/supabase/client');
+            const supabase = createClient();
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) return;
+            const res = await fetch('http://localhost:8000/api/linkedin/status', {
+                headers: { 'Authorization': `Bearer ${session.access_token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setStatus(data.status);
+                setAppliesToday(data.applies_today);
+                setMaxApplies(data.max_applies);
+            }
+        } catch (e) { console.error(e); }
+    };
+
+    useEffect(() => {
+        fetchStatus();
+        const interval = setInterval(fetchStatus, 15000);
+        return () => clearInterval(interval);
+    }, []);
 
     const handleLaunch = async () => {
         setStatus('running');
@@ -26,6 +52,7 @@ export default function LinkedInAssistant() {
 
             if (res.ok) {
                 setMessage('LinkedIn Browser is open. Please navigate to a job search or "Easy Apply" job.');
+                fetchStatus();
             } else {
                 throw new Error('Failed to launch browser');
             }
@@ -48,6 +75,7 @@ export default function LinkedInAssistant() {
             });
             setStatus('idle');
             setMessage('Assistant stopped. You can reconnect anytime.');
+            fetchStatus();
         } catch (error) {
             console.error('Error stopping:', error);
         }
@@ -109,8 +137,8 @@ export default function LinkedInAssistant() {
                 <div className="flex flex-col md:flex-row gap-6 items-start">
                     <div className="flex-1 space-y-4">
                         <div className={`p-4 rounded-xl border flex items-start gap-3 ${status === 'error' ? 'bg-red-50 border-red-100 text-red-800' :
-                                status === 'running' ? 'bg-blue-50 border-blue-100 text-blue-800' :
-                                    'bg-gray-50 border-gray-100 text-gray-700'
+                            status === 'running' ? 'bg-blue-50 border-blue-100 text-blue-800' :
+                                'bg-gray-50 border-gray-100 text-gray-700'
                             }`}>
                             {status === 'error' ? <AlertCircle className="w-5 h-5 mt-0.5" /> :
                                 status === 'running' ? <Globe className="w-5 h-5 mt-0.5 text-blue-600 animate-spin-slow" /> :
@@ -118,7 +146,7 @@ export default function LinkedInAssistant() {
                             <p className="text-sm font-medium">{message}</p>
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
                             <div className="p-3 bg-gray-50 rounded-lg border border-gray-100">
                                 <h4 className="text-xs font-bold text-gray-500 uppercase mb-1">Privacy First</h4>
                                 <p className="text-xs text-gray-600">No passwords stored. Uses your local browser session.</p>
@@ -126,6 +154,13 @@ export default function LinkedInAssistant() {
                             <div className="p-3 bg-gray-50 rounded-lg border border-gray-100">
                                 <h4 className="text-xs font-bold text-gray-500 uppercase mb-1">Safety Beta</h4>
                                 <p className="text-xs text-gray-600">Randomized delays and human-in-the-loop validation.</p>
+                            </div>
+                            <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
+                                <h4 className="text-xs font-bold text-blue-600 uppercase mb-1">Daily Safety Filter</h4>
+                                <div className="flex justify-between items-end">
+                                    <p className="text-2xl font-black text-blue-900 leading-none">{appliesToday}<span className="text-lg text-blue-500 font-medium">/{maxApplies}</span></p>
+                                    <p className="text-[10px] text-blue-600 font-semibold bg-blue-100 px-2 py-0.5 rounded-full">Automated</p>
+                                </div>
                             </div>
                         </div>
                     </div>

@@ -7,3 +7,8 @@ requests
 cryptography
 pypdf
 python-docx
+playwright
+playwright-stealth
+thefuzz
+python-levenshtein
+PyJWT

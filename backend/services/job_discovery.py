@@ -80,24 +80,13 @@ def search_jobs(query: str, location: str = "Berlin") -> List[Dict]:
     return jobs
 
 def get_mock_jobs(location: str):
-    """Return realistic mock jobs for testing/demo."""
+    """Return realistic mock engineering jobs matching the user profile."""
     return [
         {
-            'title': 'Senior Python Developer',
-            'company': 'TechGenius GmbH',
-            'description': 'We are looking for a Senior Python Developer with experience in FastAPI, Docker, and React. Must have strong SQL skills and experience with cloud platforms like AWS. Bonus points for Machine Learning knowledge.',
-            'url': 'https://example.com/job1',
-            'location': location,
-            'remote_ok': True,
-            'language': 'english',
-            'experience_level': 'senior',
-            'source': 'mock'
-        },
-        {
-            'title': 'Data Scientist',
-            'company': 'DataCorp Berlin',
-            'description': 'Join our analytics team. You should know Python, Pandas, Scikit-Learn, and SQL. Experience with Tableau is a plus. We work in an Agile environment.',
-            'url': 'https://example.com/job2',
+            'title': 'Telecommunications Data Engineer',
+            'company': 'Deutsche Telekom',
+            'description': 'We are looking for a Telecommunications Data Engineer to join our Network Analytics team in Berlin. You will work with LTE, 5G, and VoIP network data, building ETL pipelines in Python and SQL. Experience with network performance monitoring and data warehousing (Snowflake, dbt) is critical. English is required.',
+            'url': 'https://example.com/job-telecom1',
             'location': location,
             'remote_ok': False,
             'language': 'english',
@@ -105,10 +94,21 @@ def get_mock_jobs(location: str):
             'source': 'mock'
         },
         {
-            'title': 'Frontend Engineer (React)',
-            'company': 'StartupXYZ',
-            'description': 'Looking for a frontend wizard with React, TypeScript, and TailwindCSS experience. You will build user-facing dashboards. Node.js backend knowledge is helpful.',
-            'url': 'https://example.com/job3',
+            'title': 'Network Data Analyst',
+            'company': 'Vodafone Germany GmbH',
+            'description': 'Vodafone is hiring a Network Data Analyst with expertise in network monitoring, KPI dashboarding, and Tableau. Must have Python and SQL skills. Experience with Cisco routers and MPLS networks is a strong plus. English language required.',
+            'url': 'https://example.com/job-network1',
+            'location': location,
+            'remote_ok': True,
+            'language': 'english',
+            'experience_level': 'mid',
+            'source': 'mock'
+        },
+        {
+            'title': 'Data Engineer (Network Intelligence)',
+            'company': 'Ericsson',
+            'description': 'Ericsson seeks a Data Engineer to build advanced analytics pipelines for our 5G rollout. You will use Spark, Airflow, and Databricks. Strong SQL and Python skills are essential. Knowledge of telecom signaling (SS7, Diameter) is beneficial. English required.',
+            'url': 'https://example.com/job-data-eng1',
             'location': location,
             'remote_ok': True,
             'language': 'english',
@@ -155,30 +155,37 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
         except Exception as json_e:
             print(f"Error reading user_profile.json: {json_e}")
 
-        # Default filters if missing
+        # Default filters if missing — PHASE 3: Broadened for Telecommunications & Data Engineering
         if not user_filters:
             user_filters = {
-                'role_keywords': ['data', 'ai', 'analytics', 'it'],
+                'role_keywords': [
+                    'Telecommunications Engineer',
+                    'Network Data Analyst',
+                    'Telecommunications Data Engineer',
+                    'Network Analyst',
+                    'Data Engineer',
+                    'Data Analyst'
+                ],
                 'locations': ['Berlin'],
                 'languages': ['english'],
-                'experience_levels': ['mid']
+                'experience_levels': ['mid', 'junior', 'senior']  # Allow junior engineering roles
             }
             
         # 2. Search for jobs (one search per keyword per location for now)
         all_found_jobs = []
         
         # Determine keywords to search
-        keyword_list = user_filters.get('role_keywords', ['data', 'ai'])
+        keyword_list = user_filters.get('role_keywords', [
+            'Telecommunications Engineer',
+            'Network Analyst',
+            'Data Engineer',
+            'Data Analyst'
+        ])
         
         locations = user_filters.get('locations', ['Berlin'])
         
         for loc in locations:
-            # We don't want to mash them all into one giant string, we search them individually
-            # or grouped by 2 if there are too many, but for now individually is safer
-            for kw in keyword_list:
-                # To prevent excessive API calls, let's limit to the first 3 key roles
-                if keyword_list.index(kw) >= 3:
-                     break
+            for kw in keyword_list[:5]:  # Allow up to 5 keywords for better coverage
                 # Strip out hallucinated locations from the LLM keyword so Adzuna actually finds jobs
                 import re
                 clean_kw = re.sub(r'(?i)\b(remote|san francisco|new york city|new york|berlin|london)\b', '', kw).strip()
@@ -214,6 +221,36 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
         
         for job_data in all_found_jobs:
             try:
+                # PHASE 3: German Language Detection
+                # Skip jobs where the description is primarily in German 
+                # (unless English is explicitly required as well)
+                description = job_data.get('description', '') or ''
+                desc_lower = description.lower()
+                
+                german_markers = [
+                    'wir suchen', 'aufgaben:', 'anforderungen:', 'dein profil',
+                    'deine aufgaben', 'was wir bieten', 'stellenbeschreibung',
+                    'bewerbung', 'kenntnisse', 'erfahrung', 'berufserfahrung',
+                    'deutschkenntnisse', 'arbeitsort', 'vollzeit', 'teilzeit'
+                ]
+                english_required_markers = ['english required', 'english is required', 'english mandatory',
+                                            'business english', 'proficient in english']
+                
+                is_primarily_german = sum(1 for m in german_markers if m in desc_lower) >= 3
+                english_also_required = any(m in desc_lower for m in english_required_markers)
+                
+                if is_primarily_german and not english_also_required:
+                    print(f"⏭️ SKIP (German-only job detected): {job_data.get('title')} @ {job_data.get('company')}")
+                    continue
+                    
+                # PHASE 3: Mark job level correctly — don't penalize engineer roles labeled 'junior'
+                # If the title contains an engineering specialty, it's a valid mid-level role 
+                engineering_titles = ['engineer', 'analyst', 'developer', 'architect', 'data', 'network', 'telecom']
+                if job_data.get('experience_level') == 'junior':
+                    title_lower = (job_data.get('title') or '').lower()
+                    if any(t in title_lower for t in engineering_titles):
+                        job_data['experience_level'] = 'mid'  # Promote to mid for engineering roles
+                
                 # Apply filters
                 passes, reason = apply_filters(job_data, user_filters)
                 

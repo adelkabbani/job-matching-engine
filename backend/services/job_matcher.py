@@ -128,6 +128,7 @@ def extract_skills_from_description(description: str) -> Tuple[List[str], List[s
     
     # Common skill keywords (expand as needed)
     skill_keywords = [
+        # Programming & Data
         'python', 'java', 'javascript', 'typescript', 'c++', 'c#', 'ruby', 'go', 'rust',
         'sql', 'nosql', 'postgresql', 'mysql', 'mongodb', 'redis',
         'react', 'vue', 'angular', 'node.js', 'django', 'flask', 'fastapi',
@@ -138,7 +139,15 @@ def extract_skills_from_description(description: str) -> Tuple[List[str], List[s
         'pandas', 'numpy', 'scikit-learn', 'tensorflow', 'pytorch',
         'spark', 'hadoop', 'airflow', 'kafka',
         'rest api', 'graphql', 'microservices',
-        'excel', 'r', 'matlab', 'sas'
+        'excel', 'r', 'matlab', 'sas',
+        # PHASE 3: Telecommunications & Network specializations
+        'telecommunications', 'network analytics', 'data engineering', 'network engineering',
+        'lte', '5g', 'voip', 'wan', 'lan', 'mpls', 'bgp', 'ospf', 'sip',
+        'network performance', 'network monitoring', 'network optimization',
+        'nmap', 'wireshark', 'cisco', 'juniper', 'ericsson', 'huawei', 'nokia',
+        'signaling', 'ss7', 'diameter', 'radius', 'ims', 'core network',
+        'bi', 'etl', 'data warehouse', 'data pipeline', 'big data',
+        'looker', 'dbt', 'databricks', 'snowflake',
     ]
     
     required_skills = []

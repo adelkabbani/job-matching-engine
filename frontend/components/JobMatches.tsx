@@ -48,6 +48,46 @@ export default function JobMatches() {
     const [finalizing, setFinalizing] = useState(false);
     const [debugSession, setDebugSession] = useState<any>(null);
     const [proofUrl, setProofUrl] = useState<string | null>(null);
+    const [appliesToday, setAppliesToday] = useState<number>(0);
+
+    // Fetch the real-time daily apply counter from the LinkedIn assistant status
+    const fetchCounter = async () => {
+        try {
+            const { createClient } = await import('@/utils/supabase/client');
+            const supabase = createClient();
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) return;
+            const res = await fetch('http://localhost:8000/api/linkedin/status', {
+                headers: { 'Authorization': `Bearer ${session.access_token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setAppliesToday(data.applies_today ?? 0);
+            }
+        } catch (e) { /* silent — counter is non-critical */ }
+    };
+
+    // Authenticated proof viewer: fetches screenshot as blob to bypass auth header limitation on <img>
+    const viewProof = async (jobId: string) => {
+        try {
+            const { createClient } = await import('@/utils/supabase/client');
+            const supabase = createClient();
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) { alert('Not authenticated'); return; }
+            const res = await fetch(`http://localhost:8000/api/applications/${jobId}/proof`, {
+                headers: { 'Authorization': `Bearer ${session.access_token}` }
+            });
+            if (res.ok) {
+                const blob = await res.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                setProofUrl(objectUrl);
+            } else {
+                alert('Proof screenshot not found yet. Please check back after the application completes.');
+            }
+        } catch (e) {
+            alert('Failed to load proof screenshot.');
+        }
+    };
 
     useEffect(() => {
         const checkSession = async () => {
@@ -376,6 +416,8 @@ export default function JobMatches() {
                     alert(result.message || "Assistant is filling the form!");
                     // Refresh jobs to show 'applied' status
                     fetchJobs();
+                    // PHASE 4 FIX: Immediately refresh the daily submission counter
+                    fetchCounter();
                 }
             } else {
                 alert(`Error: ${result.detail || result.message}`);
@@ -705,7 +747,7 @@ export default function JobMatches() {
 
                                     {job.status === 'applied' && (
                                         <button
-                                            onClick={() => setProofUrl(`http://localhost:8000/api/applications/${job.id}/proof`)}
+                                            onClick={() => viewProof(job.id)}
                                             className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-bold bg-blue-50 px-3 py-1 rounded-full border border-blue-100 hover:bg-blue-100 transition-all"
                                         >
                                             <ListChecks className="w-4 h-4" />

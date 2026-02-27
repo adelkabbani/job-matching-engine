@@ -1,6 +1,8 @@
 # File: backend/main.py
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Security, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -23,17 +25,27 @@ from services.linkedin_assistant import launch_linkedin_browser, stop_linkedin_b
 load_dotenv()
 
 # Supabase client
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+url: str = os.environ.get("SUPABASE_URL")
+key: str = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
+if not url or not key:
     print("⚠️  WARNING: Supabase credentials not found in .env file")
-    print("   Create backend/.env with SUPABASE_URL and SUPABASE_SERVICE_KEY")
+    print("   Create backend/.env with SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY")
     supabase: Client = None
 else:
     # Service role client (admin) - used for uploads bypassing RLS
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print(f"✅ Supabase client initialized: {SUPABASE_URL}")
+    supabase: Client = create_client(url, key)
+    print(f"✅ Supabase client initialized: {url}")
+    
+    # ------------------ DEBUG HOOK ------------------
+    try:
+        _d = supabase.table('jobs').select('status').limit(10).execute()
+        print(f"🔥 LIVE DATABASE VALID STATUSES: {list(set([x.get('status') for x in _d.data if x.get('status')]))}")
+        print(f"🔥 TOTAL JOBS: {len(_d.data)}")
+        print("="*60)
+    except Exception as e:
+        print(f"🔥 DEBUG HOOK ERROR: {e}")
+    # ------------------------------------------------
 
 # Import Phase 9 Services
 try:
@@ -47,6 +59,11 @@ except ImportError:
     from backend.services.doc_generator import generate_cv_docx, generate_cover_letter_docx
 
 app = FastAPI()
+
+# Mount static logs directory for proof access
+LOGS_DIR = os.path.join(os.getcwd(), ".tmp", "logs", "applications")
+os.makedirs(LOGS_DIR, exist_ok=True)
+app.mount("/api/logs", StaticFiles(directory=LOGS_DIR), name="logs")
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -486,6 +503,16 @@ async def save_api_key(
     except Exception as e:
         print(f"Save Key Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to save key securely.")
+
+@app.get("/api/debug-status")
+async def debug_db_statuses():
+    try:
+        from main import supabase
+        res = supabase.table("jobs").select("status").limit(50).execute()
+        valid = list(set([x.get("status") for x in res.data if x.get("status")]))
+        return {"status": "success", "db_statuses": valid}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # ... extract_cv_data update ...
 
@@ -942,6 +969,8 @@ async def get_job_matches(
         jobs = result.data if result.data else []
         
         print(f"DEBUG: Found {len(jobs)} jobs matching criteria.")
+        if jobs:
+            print(f"DEBUG: EXISTING JOB STATUS EXAMPLE: {jobs[0].get('status')}")
         
         # Count filtered vs total
         total_res = supabase.table("jobs")\
@@ -1057,7 +1086,9 @@ async def launch_linkedin(user: dict = Depends(get_current_user)):
         await launch_linkedin_browser()
         return {"status": "success", "message": "LinkedIn Assistant launched"}
     except Exception as e:
+        import traceback
         print(f"Error launching LinkedIn: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/linkedin/stop")
@@ -1075,7 +1106,11 @@ async def capture_linkedin(user: dict = Depends(get_current_user)):
     """Capture search results from the active LinkedIn tab."""
     try:
         result = await capture_current_search_results(user.id, supabase)
+        if result.get("status") == "error":
+            raise HTTPException(status_code=400, detail=result.get("message", "Capture failed"))
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error capturing LinkedIn jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1127,6 +1162,7 @@ async def apply_linkedin(
     user: dict = Depends(get_current_user)
 ):
     """Trigger autofill for LinkedIn Easy Apply."""
+    print(f"📥 [API] Received apply request for job: {job_id} (dry_run={dry_run})")
     try:
         from services.linkedin_assistant import autofill_easy_apply_modal
         result = await autofill_easy_apply_modal(job_id, user.id, supabase, dry_run=dry_run)
@@ -1152,17 +1188,21 @@ async def stop_linkedin_actions(
 
 @app.get("/api/jobs/{job_id}/materials")
 async def get_job_materials(job_id: str, user: dict = Depends(get_current_user)):
-    """Fetch existing tailored materials for a job."""
     try:
         cv_res = supabase.table("cv_versions").select("*").eq("job_id", job_id).eq("user_id", user.id).execute()
-        cl_res = supabase.table("cover_letters").select("*").eq("job_id", job_id).eq("user_id", user.id).execute()
         
+        # SAFER CHECK: Return 404 if no tailored CV exists yet
+        if not cv_res.data or len(cv_res.data) == 0:
+            return {"cv": None, "cover_letters": [], "message": "Please click 'Generate CV' first."}
+        
+        cl_res = supabase.table("cover_letters").select("*").eq("job_id", job_id).eq("user_id", user.id).execute()
         return {
-            "cv": cv_res.data[0] if cv_res.data else None,
+            "cv": cv_res.data[0],
             "cover_letters": cl_res.data
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Materials Fetch Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch materials")
 
 @app.post("/api/jobs/{job_id}/tailor-cv")
 async def trigger_cv_tailoring(job_id: str, user: dict = Depends(get_current_user)):
@@ -1301,6 +1341,22 @@ async def submit_question_answer(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/applications/{job_id}/proof")
+async def get_application_proof(job_id: str, user = Depends(get_current_user)):
+    """Returns the success screenshot for an application if it exists."""
+    proof_path = os.path.join(LOGS_DIR, job_id, "success_proof.png")
+    if os.path.exists(proof_path):
+        return FileResponse(proof_path)
+    
+    # Fallback: check if DB has a custom path
+    res = supabase.table("applications").select("success_screenshot_path").eq("job_id", job_id).eq("user_id", user.id).single().execute()
+    if res.data and res.data.get("success_screenshot_path"):
+        db_path = res.data["success_screenshot_path"]
+        if os.path.exists(db_path):
+            return FileResponse(db_path)
+            
+    raise HTTPException(status_code=404, detail="Proof screenshot not found")
 
 if __name__ == "__main__":
     import uvicorn

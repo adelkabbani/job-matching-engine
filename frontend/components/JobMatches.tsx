@@ -9,7 +9,7 @@ interface Job {
     company: string;
     location: string;
     remote_ok: boolean;
-    url?: string;
+    job_url?: string;
     raw_data?: any;
     match_score: number;
     matched_skills: string[];
@@ -19,8 +19,9 @@ interface Job {
     filter_reason?: string;
     created_at: string;
     description: string;
-    status: 'interested' | 'shortlisted' | 'rejected';
+    status: 'interested' | 'shortlisted' | 'rejected' | 'scraped' | 'applied';
     is_easy_apply: boolean;
+    success_screenshot_path?: string;
 }
 
 interface JobMatchesData {
@@ -46,6 +47,7 @@ export default function JobMatches() {
     const [materials, setMaterials] = useState<any>(null);
     const [finalizing, setFinalizing] = useState(false);
     const [debugSession, setDebugSession] = useState<any>(null);
+    const [proofUrl, setProofUrl] = useState<string | null>(null);
 
     useEffect(() => {
         const checkSession = async () => {
@@ -232,7 +234,7 @@ export default function JobMatches() {
 
     const handleViewDetails = async (job: Job) => {
         // If it already has a description and score > 0, just open URL
-        const jobUrl = job.url || (job.raw_data as any)?.url || (job.raw_data as any)?.redirect_url;
+        const jobUrl = job.job_url || (job.raw_data as any)?.url || (job.raw_data as any)?.redirect_url;
 
         if (job.match_score > 0 && !job.description.includes('pending')) {
             if (jobUrl) window.open(jobUrl, '_blank');
@@ -354,8 +356,6 @@ export default function JobMatches() {
     };
 
     const handleApply = async (job: Job) => {
-        if (!job.is_easy_apply) return;
-
         setCapturingDetails(job.id); // Re-use loading state
         try {
             const { createClient } = await import('@/utils/supabase/client');
@@ -374,6 +374,8 @@ export default function JobMatches() {
                     alert(`⚠️ ${result.message}`);
                 } else {
                     alert(result.message || "Assistant is filling the form!");
+                    // Refresh jobs to show 'applied' status
+                    fetchJobs();
                 }
             } else {
                 alert(`Error: ${result.detail || result.message}`);
@@ -665,7 +667,7 @@ export default function JobMatches() {
                                         {job.match_score > 0 ? 'View Job' : 'Analyze Details'}
                                     </button>
 
-                                    {job.is_easy_apply && !job.filtered_out && (
+                                    {job.job_url?.includes('linkedin.com') && job.is_easy_apply && (
                                         <div className="flex items-center gap-2">
                                             <button
                                                 onClick={() => handleApply(job)}
@@ -688,7 +690,7 @@ export default function JobMatches() {
                                         </div>
                                     )}
 
-                                    {job.status === 'shortlisted' && (
+                                    {true && (
                                         <button
                                             onClick={() => {
                                                 setSelectedJobForMaterials(job);
@@ -698,6 +700,16 @@ export default function JobMatches() {
                                         >
                                             <FileText className="w-4 h-4" />
                                             CV & Cover Letter
+                                        </button>
+                                    )}
+
+                                    {job.status === 'applied' && (
+                                        <button
+                                            onClick={() => setProofUrl(`http://localhost:8000/api/applications/${job.id}/proof`)}
+                                            className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-bold bg-blue-50 px-3 py-1 rounded-full border border-blue-100 hover:bg-blue-100 transition-all"
+                                        >
+                                            <ListChecks className="w-4 h-4" />
+                                            View Proof ✅
                                         </button>
                                     )}
 
@@ -854,6 +866,47 @@ export default function JobMatches() {
                                     </button>
                                 )}
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Proof Modal */}
+            {proofUrl && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-8" onClick={() => setProofUrl(null)}>
+                    <div className="relative max-w-5xl w-full bg-white rounded-2xl overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <div className="absolute top-4 right-4 z-10">
+                            <button
+                                onClick={() => setProofUrl(null)}
+                                className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-full transition-all"
+                            >
+                                <XCircle className="w-6 h-6" />
+                            </button>
+                        </div>
+                        <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                            <h3 className="font-bold text-gray-900 flex items-center gap-2">
+                                <CheckCircle className="w-5 h-5 text-green-600" />
+                                Application Confirmation Proof
+                            </h3>
+                            <a
+                                href={proofUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                            >
+                                <ExternalLink className="w-3 h-3" />
+                                Open in new tab
+                            </a>
+                        </div>
+                        <div className="overflow-auto max-h-[80vh] bg-gray-900 flex items-center justify-center">
+                            <img
+                                src={proofUrl}
+                                alt="Application Success Proof"
+                                className="max-w-full h-auto shadow-inner"
+                                onError={(e) => {
+                                    (e.target as any).src = 'https://via.placeholder.com/800x600?text=Proof+Image+Loading+Fail';
+                                }}
+                            />
                         </div>
                     </div>
                 </div>

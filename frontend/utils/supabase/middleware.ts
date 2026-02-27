@@ -55,7 +55,11 @@ export async function updateSession(request: NextRequest) {
         }
     )
 
-    await supabase.auth.getUser()
+    try {
+        await supabase.auth.getSession()
+    } catch (e: any) {
+        console.error("updateSession Fetch Error:", e.message)
+    }
 
     return response
 }

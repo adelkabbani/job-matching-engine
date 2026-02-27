@@ -83,12 +83,12 @@ export default function LinkedInAssistant() {
 
     const handleCapture = async () => {
         setCapturing(true);
-        setMessage('Capturing jobs from your active tab...');
+        setMessage('Capturing jobs from the active tab in your Assistant window...');
         try {
             const { createClient } = await import('@/utils/supabase/client');
             const supabase = createClient();
             const { data: { session } } = await supabase.auth.getSession();
-            if (!session) return;
+            if (!session) throw new Error('Not authenticated');
 
             const res = await fetch('http://localhost:8000/api/linkedin/capture', {
                 method: 'POST',
@@ -99,12 +99,14 @@ export default function LinkedInAssistant() {
             if (res.ok) {
                 setLastCaptureCount(result.count);
                 setMessage(`Successfully captured ${result.count} new jobs! Check your matches below.`);
-                // Trigger a global refresh if possible, or just let JobMatches poll
             } else {
-                throw new Error(result.message || 'Capture failed');
+                // If backend returns a non-ok status, it will be caught here
+                const errorMsg = result.detail || result.message || 'Capture failed';
+                throw new Error(errorMsg);
             }
         } catch (error: any) {
-            setMessage(`Capture error: ${error.message}`);
+            setMessage(`Capture error: ${error.message}. Ensure you are on a LinkedIn Job Search page in the Assistant's browser window.`);
+            setStatus('error');
         } finally {
             setCapturing(false);
         }

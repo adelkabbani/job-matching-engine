@@ -3,65 +3,81 @@ Job discovery service.
 Interfaces with public job APIs (Adzuna) to find jobs based on user profile.
 """
 import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Absolute path loading
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(dotenv_path=env_path, override=True) # Override=True is critical!
+
+ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "").strip().replace('"', '').replace("'", "")
+ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "").strip().replace('"', '').replace("'", "")
+
+if not ADZUNA_APP_ID:
+    print(f"DEBUG: Attempted to load from: {env_path.absolute()}")
+    print("CRITICAL: ADZUNA_APP_ID is still empty after stripping!")
+
 import requests
 from typing import List, Dict, Tuple
 from services.job_scraper import apply_filters
 from services.job_matcher import get_user_skills, extract_skills_from_description, generate_match_report
 
 # Constants
-ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
-ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
 ADZUNA_BASE_URL = "https://api.adzuna.com/v1/api/jobs/de/search"  # Focus on Germany
+
 
 def search_jobs(query: str, location: str = "Berlin") -> List[Dict]:
     """
-    Search jobs using Adzuna API.
-    
-    Args:
-        query: Search keywords
-        location: Target location
-        
-    Returns:
-        List of job data or empty list if failed/no keys
+    Search jobs using Adzuna API across multiple pages.
     """
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
         print("⚠️ ADZUNA_APP_ID or ADZUNA_APP_KEY not found. Using MOCK data.")
         return get_mock_jobs(location)
         
-    params = {
-        'app_id': ADZUNA_APP_ID,
-        'app_key': ADZUNA_APP_KEY,
-        'results_per_page': 20,
-        'what': query,
-        'where': location,
-        'content-type': 'application/json'
-    }
+    jobs = []
     
-    try:
-        response = requests.get(f"{ADZUNA_BASE_URL}/1", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+    # Loop to fetch Pages 1, 2, and 3 instead of just 1
+    for page in range(1, 4):
+        params = {
+            'app_id': ADZUNA_APP_ID,
+            'app_key': ADZUNA_APP_KEY,
+            'results_per_page': 20, # 60 jobs total
+            'what': query,
+            'where': location,
+            'content-type': 'application/json'
+        }
         
-        jobs = []
-        for result in data.get('results', []):
-            job = {
-                'title': result.get('title'),
-                'company': result.get('company', {}).get('display_name'),
-                'description': result.get('description'),
-                'url': result.get('redirect_url'),
-                'location': result.get('location', {}).get('display_name'),
-                'remote_ok': 'remote' in (result.get('description') or '').lower() or 'remote' in (result.get('title') or '').lower(),
-                'language': 'english', # Heuristic: most data roles are English. Can improve with langdetect
-                'experience_level': 'mid', # Default
-                'source': 'adzuna'
-            }
-            jobs.append(job)
+        try:
+            print(f"DEBUG: Fetching Adzuna Page {page} for query '{query}' in '{location}'...")
+            response = requests.get(f"{ADZUNA_BASE_URL}/{page}", params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
             
-        return jobs
-        
-    except Exception as e:
-        print(f"Error during Adzuna search: {e}")
-        return get_mock_jobs(location)
+            page_results = data.get('results', [])
+            if not page_results:
+                break # No more results from Adzuna
+                
+            for result in page_results:
+                job = {
+                    'title': result.get('title'),
+                    'company': result.get('company', {}).get('display_name'),
+                    'description': result.get('description'),
+                    'url': result.get('redirect_url'),
+                    'location': result.get('location', {}).get('display_name'),
+                    'remote_ok': 'remote' in (result.get('description') or '').lower() or 'remote' in (result.get('title') or '').lower(),
+                    'language': 'english', 
+                    'experience_level': 'mid', 
+                    'source': 'adzuna'
+                }
+                jobs.append(job)
+                
+        except Exception as e:
+            print(f"Error during Adzuna search on page {page}: {e}")
+            if not jobs:
+                return get_mock_jobs(location)
+            break
+            
+    return jobs
 
 def get_mock_jobs(location: str):
     """Return realistic mock jobs for testing/demo."""
@@ -120,6 +136,25 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
             print(f"Error fetching filters: {e}")
             user_filters = {}
 
+        # 1.5. Merge LLM keywords from user_profile.json if available
+        try:
+            from pathlib import Path
+            import json
+            profile_path = Path(__file__).parent.parent.parent / ".tmp" / "user_profile.json"
+            if profile_path.exists():
+                with open(profile_path, "r", encoding="utf-8") as f:
+                    profile_data = json.load(f)
+                    # Support both list formats and string formats
+                    queries = profile_data.get("preferences", {}).get("search_queries", [])
+                    if queries:
+                        if isinstance(queries, str):
+                            user_filters["role_keywords"] = [queries]
+                        else:
+                            user_filters["role_keywords"] = queries
+                        print(f"DEBUG: Loaded LLM keywords from profile: {queries}")
+        except Exception as json_e:
+            print(f"Error reading user_profile.json: {json_e}")
+
         # Default filters if missing
         if not user_filters:
             user_filters = {
@@ -129,14 +164,30 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
                 'experience_levels': ['mid']
             }
             
-        keywords = " ".join(user_filters.get('role_keywords', ['data', 'ai']))
+        # 2. Search for jobs (one search per keyword per location for now)
+        all_found_jobs = []
+        
+        # Determine keywords to search
+        keyword_list = user_filters.get('role_keywords', ['data', 'ai'])
+        
         locations = user_filters.get('locations', ['Berlin'])
         
-        # 2. Search for jobs (one search per location for now)
-        all_found_jobs = []
         for loc in locations:
-            found = search_jobs(keywords, loc)
-            all_found_jobs.extend(found)
+            # We don't want to mash them all into one giant string, we search them individually
+            # or grouped by 2 if there are too many, but for now individually is safer
+            for kw in keyword_list:
+                # To prevent excessive API calls, let's limit to the first 3 key roles
+                if keyword_list.index(kw) >= 3:
+                     break
+                # Strip out hallucinated locations from the LLM keyword so Adzuna actually finds jobs
+                import re
+                clean_kw = re.sub(r'(?i)\b(remote|san francisco|new york city|new york|berlin|london)\b', '', kw).strip()
+                # Further compress multiple spaces
+                clean_kw = re.sub(r'\s+', ' ', clean_kw)
+                     
+                print(f"DEBUG: Searching API natively for keyword: '{clean_kw}' in {loc} (Original LLM Keyword: '{kw}')")
+                found = search_jobs(clean_kw, loc)
+                all_found_jobs.extend(found)
             
         if not all_found_jobs:
             return {"status": "success", "count": 0, "message": "No jobs found or missing API keys"}
@@ -162,38 +213,48 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
         new_jobs_count = 0
         
         for job_data in all_found_jobs:
-            # Apply filters
+            try:
+                # Apply filters
+                passes, reason = apply_filters(job_data, user_filters)
                 
-            # Apply filters
-            passes, reason = apply_filters(job_data, user_filters)
-            
-            # Scoring logic
-            required_skills, optional_skills = extract_skills_from_description(job_data['description'])
-            match_report = generate_match_report(user_skills, required_skills, optional_skills)
-            
-            # Prepare DB record
-            job_record = {
-                'user_id': user_id,
-                'title': job_data['title'],
-                'company': job_data['company'],
-                'description': job_data['description'],
-                # 'url': job_data['url'], # REMOVED: Column missing in DB
-                'source': 'adzuna',
-                'location': job_data['location'],
-                'remote_ok': job_data['remote_ok'],
-                'language': job_data['language'],
-                'experience_level': job_data['experience_level'],
-                'match_score': match_report['match_score'],
-                'matched_skills': match_report['matched_skills'],
-                'missing_skills': match_report['missing_skills'],
-                'strengths_summary': match_report['strengths_summary'],
-                'filtered_out': not passes,
-                'filter_reason': None if passes else reason,
-                'raw_data': job_data
-            }
-            
-            supabase.table("jobs").insert(job_record).execute()
-            new_jobs_count += 1
+                # Scoring logic
+                required_skills, optional_skills = extract_skills_from_description(job_data['description'])
+                match_report = generate_match_report(user_skills, required_skills, optional_skills)
+                
+                # Prepare DB record
+                job_record = {
+                    'user_id': user_id,
+                    'title': job_data['title'],
+                    'company': job_data['company'],
+                    'description': job_data['description'],
+                    'job_url': job_data.get('url'),
+                    'source': 'adzuna',
+                    'location': job_data['location'],
+                    'remote_ok': job_data['remote_ok'],
+                    'language': job_data['language'],
+                    'experience_level': job_data['experience_level'],
+                    'match_score': match_report['match_score'],
+                    'matched_skills': match_report['matched_skills'],
+                    'missing_skills': match_report['missing_skills'],
+                    'strengths_summary': match_report['strengths_summary'],
+                    'filtered_out': not passes,
+                    'filter_reason': None if passes else reason,
+                    'raw_data': job_data,
+                    'status': 'scraped'
+                }
+                
+                supabase.table("jobs").insert(job_record).execute()
+                new_jobs_count += 1
+            except Exception as inner_e:
+                import traceback
+                print(f"==================================================")
+                print(f"CRITICAL ERROR SAVING JOB TO SUPABASE:")
+                print(f"Title: {job_data.get('title')}")
+                print(f"Company: {job_data.get('company')}")
+                print(f"Exception: {inner_e}")
+                traceback.print_exc()
+                print(f"==================================================")
+                continue
             
         return {
             "status": "success",

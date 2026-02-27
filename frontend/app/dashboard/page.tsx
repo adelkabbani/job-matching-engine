@@ -9,10 +9,10 @@ import ResumePreview from '@/components/ResumePreview';
 import CertificateInsights from '@/components/CertificateInsights';
 import LinkedInAssistant from '@/components/LinkedInAssistant';
 import JobMatches from '@/components/JobMatches';
-import { motion } from 'framer-motion';
 import { Briefcase, Target, Zap, Settings } from 'lucide-react';
 
-const JobMap3D = dynamic(() => import('@/components/JobMap3D'), { ssr: false });
+// JobMap disabled temporarily for performance debugging
+const JobMap3D = () => <div className="p-4 text-gray-500">Map temporarily disabled for performance</div>;
 
 export default function Dashboard() {
   const [jobs, setJobs] = useState([]);
@@ -122,36 +122,23 @@ export default function Dashboard() {
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 3D Job Map */}
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="glass-effect rounded-xl p-6"
-        >
+        <div className="glass-effect rounded-xl p-6 animate-fade-in">
           <h2 className="text-2xl font-semibold mb-4">Job Map</h2>
           <JobMap3D jobs={jobs} />
-        </motion.div>
+        </div>
 
         {/* Skill Tree */}
-        <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          className="glass-effect rounded-xl p-6"
-        >
+        <div className="glass-effect rounded-xl p-6 cursor-not-allowed">
           <h2 className="text-2xl font-semibold mb-4">Skill Tree</h2>
           <SkillTree />
-        </motion.div>
+        </div>
       </div>
 
       {/* Live Agent View */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="glass-effect rounded-xl p-6 mt-6"
-      >
+      <div className="glass-effect rounded-xl p-6 mt-6">
         <h2 className="text-2xl font-semibold mb-4">Live Agent View</h2>
         <LiveAgentView />
-      </motion.div>
+      </div>
     </div>
   );
 }

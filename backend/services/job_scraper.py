@@ -39,6 +39,7 @@ def fetch_job_from_url(url: str) -> Optional[Dict]:
             'remote_ok': detect_remote(soup),
             'language': detect_language(soup),
             'experience_level': detect_experience_level(soup),
+            'is_easy_apply': detect_easy_apply(soup),
             'raw_html': str(soup)[:5000]  # Store snippet for debugging
         }
         
@@ -165,6 +166,21 @@ def detect_experience_level(soup: BeautifulSoup) -> str:
         return 'mid'
 
 
+def detect_easy_apply(soup: BeautifulSoup) -> bool:
+    """Detect if job is LinkedIn Easy Apply."""
+    # Look for Easy Apply text or specific classes
+    text = soup.get_text().lower()
+    easy_apply_indicators = ['easy apply', 'easy_apply', 'apply with linkedin']
+    if any(indicator in text for indicator in easy_apply_indicators):
+        return True
+    
+    # Check for specific buttons or attributes
+    if soup.find('button', attrs={'aria-label': re.compile(r'Easy Apply', re.I)}):
+        return True
+    
+    return False
+
+
 def apply_filters(job_data: Dict, user_filters: Dict) -> Tuple[bool, str]:
     """
     Check if job passes user filters.
@@ -192,19 +208,10 @@ def apply_filters(job_data: Dict, user_filters: Dict) -> Tuple[bool, str]:
     if not location_match:
         return False, f"Location mismatch: {job_data['location']}"
     
-    # Role relevance (keyword match in description)
-    description_lower = job_data['description'].lower()
-    role_keywords = user_filters.get('role_keywords', ['data', 'ai', 'analytics', 'it'])
+    # Experience level and Role relevance are now deferred to the LLM scoring engine inside job_matcher.py
+    # to evaluate nuanced semantic matches, rather than strict verbatim string checks.
     
-    if not any(keyword in description_lower for keyword in role_keywords):
-        return False, "Role not relevant (no matching keywords)"
-    
-    # Experience level filter
-    user_levels = user_filters.get('experience_levels', ['junior', 'mid'])
-    if job_data['experience_level'] not in user_levels:
-        return False, f"Experience level mismatch: {job_data['experience_level']}"
-    
-    return True, "Passed all filters"
+    return True, "Passed basic filters"
 
 
 def ingest_job(url: str, user_id: str, supabase) -> Dict:
@@ -256,6 +263,8 @@ def ingest_job(url: str, user_id: str, supabase) -> Dict:
         'company': job_data['company'],
         'description': job_data['description'],
         # 'url': url, # REMOVED: Column missing in DB
+        'job_url': url,
+        'is_easy_apply': job_data['is_easy_apply'],
         'source': 'manual',
         'location': job_data['location'],
         'remote_ok': job_data['remote_ok'],
@@ -267,7 +276,8 @@ def ingest_job(url: str, user_id: str, supabase) -> Dict:
         'strengths_summary': match_report['strengths_summary'],
         'filtered_out': not passes,
         'filter_reason': None if passes else reason,
-        'raw_data': job_data
+        'raw_data': job_data,
+        'status': 'scraped'
     }
     
     result = supabase.table("jobs").insert(job_record).execute()

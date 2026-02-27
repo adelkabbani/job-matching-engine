@@ -12,3 +12,4 @@ playwright-stealth
 thefuzz
 python-levenshtein
 PyJWT
+pathlib

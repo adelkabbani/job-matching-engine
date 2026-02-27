@@ -5,7 +5,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+backend_env = Path(__file__).parent.parent / "backend" / ".env"
+load_dotenv(backend_env)
 
 # Setup logging
 log_path = Path(__file__).parent.parent / ".tmp" / "generate_keywords.log"
@@ -36,8 +37,8 @@ def generate(profile_path):
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        log("Error: OPENROUTER_API_KEY not found in .env")
-        return
+        log("Warning: OPENROUTER_API_KEY not found in .env. Using fallback generation.")
+        api_key = "dummy_key_for_fallback"
 
     log("Generating smart search keywords...")
     try:

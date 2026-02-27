@@ -129,42 +129,90 @@ async def capture_current_search_results(user_id: str, supabase) -> Dict:
     Scrapes jobs from the current active LinkedIn Search tab.
     """
     global _browser_context
+    
+    debug_log_path = os.path.join(os.getcwd(), "linkedin_capture_debug.log")
+    
+    def log(msg):
+        with open(debug_log_path, "a", encoding="utf-8") as f:
+            f.write(f"{msg}\n")
+        print(msg)
+
+    log(f"\n--- Starting Capture for User {user_id} ---")
+    
     if not _browser_context:
+        log("❌ Error: Browser not launched. Call launch first.")
         return {"status": "error", "message": "Browser not launched. Call launch first."}
 
     # Find the tab that is on LinkedIn Search
     pages = _browser_context.pages
+    log(f"📄 Number of open pages: {len(pages)}")
     target_page = None
     for p in pages:
+        log(f"🔗 Checking page: {p.url}")
         if "linkedin.com/jobs/search" in p.url or "linkedin.com/jobs/collections" in p.url:
             target_page = p
             break
     
     if not target_page:
+        log("❌ Error: No active LinkedIn search tab found.")
         return {"status": "error", "message": "No active LinkedIn search tab found. Please navigate to a job search first."}
 
     print(f"🕵️ Analyzing search results on: {target_page.url}")
     
     # 1. Capture basic job list items
-    # Selectors for LinkedIn Job Cards (as of late 2023/early 2024)
-    # Note: These can change, so we use common classes/attributes
+    # Hyper-Robust Heuristic Engine
     jobs = await target_page.evaluate('''() => {
-        const jobCards = document.querySelectorAll('.job-card-container, .jobs-search-results-list__list-item');
+        // Multi-strategy card detection
+        let jobCards = document.querySelectorAll('.job-card-container, .jobs-search-results-list__list-item, [role="button"][class*="_"], [data-job-id]');
+        
+        // Filter out non-job cards if we found too many generic button roles
+        if (jobCards.length > 50) {
+            jobCards = Array.from(jobCards).filter(c => c.innerText.includes('\\n') && (c.innerText.includes('Easy Apply') || c.querySelector('a')));
+        }
+        
         const results = [];
         
         jobCards.forEach(card => {
-            const titleEl = card.querySelector('.job-card-list__title, .artdeco-entity-lockup__title a');
-            const companyEl = card.querySelector('.job-card-container__company-name, .artdeco-entity-lockup__subtitle');
-            const locationEl = card.querySelector('.job-card-container__metadata-item, .artdeco-entity-lockup__caption');
+            let title = '', company = '', location = '', url = '', isEasyApply = false;
+
+            // Strategy A: Standard Selectors
+            const titleEl = card.querySelector('.job-card-list__title--link, .job-card-list__title, .artdeco-entity-lockup__title a, a[href*="/jobs/view/"] h2');
+            const companyEl = card.querySelector('.job-card-container__primary-description, .job-card-container__company-name, .artdeco-entity-lockup__subtitle, .job-card-list__company-name');
+            const locationEl = card.querySelector('.job-card-container__metadata-item, .artdeco-entity-lockup__caption, .job-card-container__metadata-wrapper li');
             const linkEl = card.querySelector('a[href*="/jobs/view/"]');
             
-            if (titleEl && linkEl) {
+            // Link is critical for Job ID
+            if (linkEl) {
+                url = linkEl.href.split('?')[0];
+            }
+
+            // Field Parsing with Fallback to Heuristic
+            if (titleEl) title = titleEl.innerText.trim();
+            if (companyEl) company = companyEl.innerText.trim();
+            if (locationEl) location = locationEl.innerText.trim();
+
+            // Heuristic Fallback (Split Text)
+            // LinkedIn cards often have: [Line 0: Title, Line 1: Company, Line 2: Location]
+            if (!title || !company) {
+                const lines = card.innerText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                if (lines.length >= 2) {
+                    if (!title) title = lines[0];
+                    if (!company) company = lines[1];
+                    if (!location && lines[2]) location = lines[2];
+                }
+            }
+
+            // Easy Apply Detection
+            isEasyApply = card.innerText.includes('Easy Apply') || 
+                          !!card.querySelector('.job-card-container__apply-method, .jobs-search-results-list__easy-apply-indicator, .job-card-list__footer-item--emphasis');
+
+            if (title && url) {
                 results.push({
-                    title: titleEl.innerText.trim(),
-                    company: companyEl ? companyEl.innerText.trim() : 'Unknown',
-                    location: locationEl ? locationEl.innerText.trim() : 'Unknown',
-                    url: linkEl.href.split('?')[0], // Clean URL
-                    source: 'linkedin_assistant'
+                    title,
+                    company: company || 'Unknown',
+                    location: location || 'Remote',
+                    url,
+                    is_easy_apply: isEasyApply
                 });
             }
         });
@@ -172,9 +220,17 @@ async def capture_current_search_results(user_id: str, supabase) -> Dict:
     }''')
 
     if not jobs:
-        return {"status": "success", "count": 0, "message": "No jobs found on this page."}
+        log("⚠️ No jobs found by JS evaluation on this page.")
+        # Diagnostic: check how many potential cards were seen at all
+        card_count = await target_page.evaluate('() => document.querySelectorAll(".job-card-container, .jobs-search-results-list__list-item, [role=\\"button\\"][class*=\\"_\\"], [data-job-id]").length')
+        log(f"🔍 Diagnostic: Selector count found {card_count} potential cards but failed to parse details.")
+        # Log the first 500 chars of innerText of the first card if found
+        first_card_text = await target_page.evaluate('() => { const c = document.querySelector(".job-card-container, .jobs-search-results-list__list-item, [role=\\"button\\"][class*=\\"_\\"], [data-job-id]"); return c ? c.innerText.substring(0, 300) : "NONE"; }')
+        log(f"🔍 Sample Card Text: {first_card_text}")
+        log(f"📄 Page Title: {await target_page.title()}")
+        return {"status": "success", "count": 0, "message": "No jobs found on this page. Please ensure you are looking at the job list."}
 
-    # 2. Process and Score each job
+    log(f"✅ Found {len(jobs)} jobs on page using heuristic engine. Processing...")
     # For MVP, we'll try to get descriptions if the user has clicked them or we can fetch them
     # For now, we'll just ingest them. In Track B, we can navigate to each URL if needed.
     
@@ -184,9 +240,15 @@ async def capture_current_search_results(user_id: str, supabase) -> Dict:
     
     new_count = 0
     for job in jobs:
-        # Check uniqueness
-        existing = supabase.table("jobs").select("id").eq("user_id", user_id).eq("url", job['url']).execute()
-        if existing.data:
+        # Check uniqueness - Correct column name is job_url
+        log(f"🧐 Checking uniqueness for: {job['url']}")
+        try:
+            existing = supabase.table("jobs").select("id").eq("user_id", user_id).eq("job_url", job['url']).execute()
+            if existing.data:
+                log(f"⏭️ Skipping duplicate: {job['url']}")
+                continue
+        except Exception as e:
+            log(f"❌ Error checking uniqueness: {e}")
             continue
             
         # For a full score, we ideally need the description. 
@@ -201,15 +263,27 @@ async def capture_current_search_results(user_id: str, supabase) -> Dict:
             'title': job['title'],
             'company': job['company'],
             'description': "Full description pending... (Click View Job to see more)", 
-            'url': job['url'],
+            'job_url': job['url'],
             'source': 'linkedin_assistant',
             'location': job['location'],
+            'is_easy_apply': job['is_easy_apply'],
             'match_score': 0, # Placeholder
-            'filtered_out': False
+            'filtered_out': False,
+            'status': 'scraped'
         }
         
-        supabase.table("jobs").insert(job_record).execute()
-        new_count += 1
+        try:
+            log(f"📥 Inserting job: {job['title']} (Easy Apply: {job['is_easy_apply']})")
+            insert_res = supabase.table("jobs").insert(job_record).execute()
+            if insert_res.data:
+                new_count += 1
+                log(f"✅ Inserted: {job['title']}")
+            else:
+                log(f"⚠️ Insertion returned no data for: {job['title']}")
+        except Exception as e:
+            log(f"❌ Error inserting job: {e}")
+            
+    log(f"🏁 Finished capture. New jobs: {new_count}")
 
     return {"status": "success", "count": new_count, "jobs": jobs}
 
@@ -222,12 +296,12 @@ async def capture_job_details(job_id: str, user_id: str, supabase) -> Dict:
     if not _browser_context:
         return {"status": "error", "message": "Assistant browser not running."}
 
-    # Fetch job URL from DB
+    # Fetch job URL from DB - Correct column is job_url
     res = supabase.table("jobs").select("*").eq("id", job_id).eq("user_id", user_id).single().execute()
     if not res.data:
         return {"status": "error", "message": "Job not found."}
     
-    job_url = res.data.get('url') or res.data.get('raw_data', {}).get('url')
+    job_url = res.data.get('job_url') or res.data.get('raw_data', {}).get('url')
     if not job_url:
          return {"status": "error", "message": "Job URL not found."}
     
@@ -283,6 +357,7 @@ async def capture_job_details(job_id: str, user_id: str, supabase) -> Dict:
         return {"status": "error", "message": str(e)}
 
 async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run: bool = False) -> Dict:
+    print(f"\n🚀 [ASSISTANT] autofill_easy_apply_modal triggered for job: {job_id}")
     """
     Orchestrates the autofill process for a LinkedIn Easy Apply modal.
     - Navigates to job
@@ -292,6 +367,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
     """
     global _browser_context, _stop_requested, _applies_today
     if not _browser_context:
+        print("❌ [ASSISTANT] Browser context is MISSING. Returning error.")
         return {"status": "error", "message": "Assistant browser not running."}
 
     _stop_requested = False # Reset for new attempt
@@ -311,33 +387,92 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
     # Setup log dir
     job_log_dir = os.path.join(LOGS_DIR, str(job_id))
     os.makedirs(job_log_dir, exist_ok=True)
+    print(f"📁 [ASSISTANT] Log directory: {job_log_dir}")
     
     try:
         await _rate_limit_check()
         
-        # 2. Navigate and Open Modal
+        # 1.1 Extract basic job info for logic
         job_url = job.get('url') or job.get('raw_data', {}).get('url')
+        company_name = job.get("company", "Unknown")
+        
         if not job_url:
+             print(f"❌ Job URL missing for {job_id}")
              return {"status": "error", "message": "Job URL not found."}
+
+        # 1.2 LinkedIn Domain Check
+        if "linkedin.com" not in job_url:
+            print(f"❌ Aborting: This is NOT a LinkedIn job. URL: {job_url}")
+            return {
+                "status": "error", 
+                "message": "Assistant currently only supports LinkedIn Easy Apply jobs. This job links to an external site."
+            }
 
         # Apply stealth to the job page
         await Stealth().apply_stealth_async(page)
+        
+        # DEBUG: Initial Page Load
+        await page.screenshot(path=os.path.join(job_log_dir, "0_page_load.png"))
+        print(f"📸 Captured initial page load for job {job_id}")
 
         if page.url != job_url:
-            await page.goto(job_url, wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+            try:
+                print(f"🌐 Navigating to job URL: {job_url}")
+                await page.goto(job_url, wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(3)
+                await page.screenshot(path=os.path.join(job_log_dir, "0.5_after_navigation.png"))
+            except Exception as e:
+                print(f"❌ Navigation failed: {e}")
+                await page.screenshot(path=os.path.join(job_log_dir, "error_navigation_failed.png"))
+                return {"status": "error", "message": f"Failed to navigate to job: {str(e)}"}
         
         await _check_stop()
         
-        easy_apply_btn = await page.query_selector('.jobs-apply-button--top-card button[aria-label*="Easy Apply"]')
+        print(f"🔍 Searching for Easy Apply button...")
+        await page.screenshot(path=os.path.join(job_log_dir, "0.6_before_button_check.png"))
+        
+        # Fallback selectors for Easy Apply button
+        selectors = [
+            'button[data-view-name="job-apply-button"]', # Highly reliable in recent logs
+            '.jobs-apply-button--top-card button[aria-label*="Easy Apply"]',
+            '.jobs-apply-button--top-card button:has-text("Easy Apply")',
+            'button.jobs-apply-button[aria-label*="Easy Apply"]',
+            'button.jobs-apply-button:has-text("Easy Apply")',
+            '.jobs-s-apply button[aria-label*="Easy Apply"]',
+            '.jobs-s-apply button:has-text("Easy Apply")',
+            'button[aria-label*="Apply to"]', # Sometimes it says "Apply to [Company]"
+            'button:has-text("Apply")' # Final desperate fallback for any "Apply" button
+        ]
+        
+        easy_apply_btn = None
+        for selector in selectors:
+            try:
+                easy_apply_btn = await page.query_selector(selector)
+                if easy_apply_btn:
+                    print(f"✅ Found button with selector: {selector}")
+                    break
+            except: continue
+
         if not easy_apply_btn:
-            # Check if modal is already open
+            # DEBUG: Modal Not Found - Log Source
+            print(f"⚠️ Easy Apply button NOT found. Saving page source for debug.")
+            await page.screenshot(path=os.path.join(job_log_dir, "error_button_not_found.png"))
+            source = await page.content()
+            with open(os.path.join(job_log_dir, "page_source.html"), "w", encoding="utf-8") as f:
+                f.write(source)
+
+            # Check if modal already open
             modal = await page.query_selector('.jobs-easy-apply-modal')
             if not modal:
+                print(f"❌ Easy Apply button or modal NOT found for {company_name}. See page_source.html")
                 return {"status": "error", "message": "Easy Apply button not found on page."}
         else:
+            print(f"🖱️ Clicking Easy Apply for {company_name}")
             await easy_apply_btn.click()
             await asyncio.sleep(2)
+        
+        # DEBUG: Check if modal opened
+        await page.screenshot(path=os.path.join(job_log_dir, "1_modal_opened.png"))
 
         # 3. Form Filling Loop (Multi-step)
         max_steps = 10
@@ -372,13 +507,19 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
                 try:
                     await page.wait_for_selector('h3:has-text("Application submitted"), .artdeco-modal__header:has-text("Application submitted"), [data-test-modal-id="postApplyModal"]', timeout=8000)
                     print("✅ Application successfully submitted! Logging to tracker.")
+                    
+                    # CAPTURE SUCCESS PROOF
+                    success_path = os.path.join(job_log_dir, "success_proof.png")
+                    await page.screenshot(path=success_path)
+                    
                     supabase.table("applications").insert({
                         "user_id": user_id,
                         "job_id": job_id,
                         "company": job.get("company", "Unknown"),
                         "role_title": job.get("title", "Unknown"),
                         "status": "applied",
-                        "match_score": job.get("match_score", 0)
+                        "match_score": job.get("match_score", 0),
+                        "success_screenshot_path": success_path
                     }).execute()
                     
                     supabase.table("jobs").update({"status": "applied"}).eq("id", job_id).execute()
@@ -388,8 +529,20 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
                     
                     return {"status": "success", "message": "Application submitted automatically."}
                 except Exception as e:
-                    print(f"Submission verification failed: {e}")
-                    return {"status": "warning", "message": "Clicked Submit, but could not verify success."}
+                    print(f"⚠️ Submission verification timed out: {e}")
+                    # Still record as applied but with warning status
+                    supabase.table("applications").insert({
+                        "user_id": user_id,
+                        "job_id": job_id,
+                        "company": job.get("company", "Unknown"),
+                        "role_title": job.get("title", "Unknown"),
+                        "status": "applied",
+                        "match_score": job.get("match_score", 0),
+                        "success_screenshot_path": os.path.join(job_log_dir, f"step_{current_step}.png") # Use last known step
+                    }).execute()
+                    supabase.table("jobs").update({"status": "applied"}).eq("id", job_id).execute()
+                    
+                    return {"status": "warning", "message": "Clicked Submit, but verification timed out. Record saved anyway."}
             
             # Fill current step's fields
             current_state_before = await _extract_form_state(page)

@@ -158,28 +158,21 @@ def get_jobs():
     return data
 
 @app.get("/api/profile/skills")
-def get_skills():
-    if not PROFILE_FILE.exists():
-        return []
-        
-    with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-        profile = json.load(f)
-        
-    # Transform profile skills into Skill Tree format
-    skills_list = []
-    raw_skills = profile.get("skills", [])
+def get_skills(user: dict = Depends(get_current_user)):
+    from services.job_matcher import get_detailed_user_skills
     
-    if isinstance(raw_skills, list):
-        for skill in raw_skills:
-            if isinstance(skill, str):
-                skills_list.append({
-                    "name": skill,
-                    "level": random.randint(60, 95),
-                    "category": "Detected",
-                    "required_for": random.randint(3, 15)
-                })
-    
-    return skills_list
+    if not supabase:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase not configured."
+        )
+        
+    try:
+        skills_list = get_detailed_user_skills(supabase, user.id)
+        return skills_list
+    except Exception as e:
+        print(f"Error fetching detailed skills: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Auto-extraction background task for certificates
 async def auto_extract_certificate(document_id: str, user_id: str, content_text: str):

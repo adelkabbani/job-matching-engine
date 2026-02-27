@@ -40,6 +40,7 @@ def extract_resume_data(text_content: str, api_key: str) -> Dict[str, Any]:
     3. Do not include markdown formatting (like ```json ... ```) in the response. Just the raw JSON string.
     4. If a field is not found, leave it null or empty list as per schema default.
     5. Clean up any weird character artifacts from the text.
+    6. PRIORITY SKILLS: Pay special attention to identifying and extracting advanced engineering skills, particularly "Telecommunications Engineering", "Network Analytics", "Data Engineering", "Data Analytics", and related specializations.
     """
 
     user_prompt = f"Here is the CV text:\n\n{text_content[:20000]}" # Truncate if too huge to avoid errors, though Flash has context.
@@ -145,7 +146,8 @@ def extract_certificate_data(ocr_text: str, api_key: str) -> Dict[str, Any]:
     5. For the 'title' field, extract the certificate name, course name, or achievement title.
     6. For the 'issuer' field, extract the organization, institution, or company name.
     7. For 'completion_date', extract any date mentioned (flexible format: YYYY-MM-DD, Month Year, etc.).
-    8. For 'skills', extract relevant keywords, technologies, or competencies mentioned.
+    8. For 'skills', extract relevant keywords, technologies, or competencies mentioned. 
+       PRIORITY SKILLS: Pay special attention to advanced competencies like "Telecommunications Engineering", "Network Analytics", "Data Engineering", and related tools.
     9. Set 'confidence' to 'high' if all fields are clearly found, 'medium' if some are inferred, 'low' if mostly guessing.
     """
 

@@ -15,23 +15,36 @@ export default function SkillTree() {
     const [skills, setSkills] = useState<Skill[]>([]);
 
     useEffect(() => {
-        // Load user profile skills
-        fetch('http://localhost:8000/api/profile/skills')
-            .then(res => res.json())
-            .then(data => setSkills(data))
-            .catch(() => {
+        async function fetchSkills() {
+            try {
+                const { createClient } = await import('@/utils/supabase/client');
+                const supabase = createClient();
+
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) return;
+
+                const res = await fetch('http://localhost:8000/api/profile/skills', {
+                    headers: {
+                        'Authorization': `Bearer ${session.access_token}`
+                    }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setSkills(data);
+                } else {
+                    throw new Error('Failed to fetch skills');
+                }
+            } catch (err) {
+                console.error("Error fetching skills:", err);
                 // Mock data for demo
                 setSkills([
-                    { name: 'Python', level: 90, category: 'Languages', required_for: 12 },
-                    { name: 'JavaScript', level: 85, category: 'Languages', required_for: 8 },
-                    { name: 'React', level: 80, category: 'Frontend', required_for: 10 },
-                    { name: 'Node.js', level: 75, category: 'Backend', required_for: 6 },
-                    { name: 'Docker', level: 0, category: 'DevOps', required_for: 15 },
-                    { name: 'Kubernetes', level: 0, category: 'DevOps', required_for: 8 },
-                    { name: 'AWS', level: 60, category: 'Cloud', required_for: 11 },
-                    { name: 'PostgreSQL', level: 70, category: 'Database', required_for: 9 },
+                    { name: 'Python', level: 90, category: 'Claimed', required_for: 12 },
+                    { name: 'Telecommunications Engineering', level: 95, category: 'Validated', required_for: 8 },
+                    { name: 'Data Engineering', level: 85, category: 'Certified', required_for: 10 },
                 ]);
-            });
+            }
+        }
+        fetchSkills();
     }, []);
 
     const categories = Array.from(new Set(skills.map(s => s.category)));
@@ -90,7 +103,7 @@ export default function SkillTree() {
                                                             animate={{ width: `${skill.level}%` }}
                                                             transition={{ duration: 1, delay: idx * 0.1 + skillIdx * 0.05 }}
                                                             className={`h-full ${skill.level >= 70 ? 'bg-green-500' :
-                                                                    skill.level >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+                                                                skill.level >= 40 ? 'bg-yellow-500' : 'bg-red-500'
                                                                 }`}
                                                         />
                                                     </div>

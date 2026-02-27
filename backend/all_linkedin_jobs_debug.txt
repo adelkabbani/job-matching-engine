@@ -1,5 +1,0 @@
-Available sources: ['manual', 'adzuna']
-Source 'manual': 7 jobs
-Source 'adzuna': 45 jobs
-Jobs with is_easy_apply=True: 0
-[]

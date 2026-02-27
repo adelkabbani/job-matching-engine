@@ -22,11 +22,11 @@ from datetime import datetime
 from services.linkedin_assistant import launch_linkedin_browser, stop_linkedin_browser, capture_current_search_results
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Supabase client
-url: str = os.environ.get("SUPABASE_URL")
-key: str = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+url: str = os.environ.get("SUPABASE_URL", "").strip().replace('"', '').replace("'", "")
+key: str = (os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or "").strip().replace('"', '').replace("'", "")
 
 if not url or not key:
     print("⚠️  WARNING: Supabase credentials not found in .env file")
@@ -217,7 +217,7 @@ async def auto_extract_certificate(document_id: str, user_id: str, content_text:
         
         # Decrypt API key
         from services.encryption import decrypt_value
-        api_key = decrypt_value(profile_res.data[0]["openrouter_key"])
+        api_key = decrypt_value(profile_res.data[0]["openrouter_key"]).strip().replace('"', '').replace("'", "")
         
         # Extract certificate data using LLM
         from services.llm import extract_certificate_data
@@ -535,7 +535,7 @@ async def extract_cv_data(
              raise HTTPException(status_code=400, detail="OpenRouter API Key not found. Please add it in Settings.")
         
         encrypted_key = profile_res.data["openrouter_key"]
-        api_key = decrypt_value(encrypted_key)
+        api_key = decrypt_value(encrypted_key).strip().replace('"', '').replace("'", "")
         
     except Exception as e:
         print(f"Profile Fetch/Decrypt Error: {e}")
@@ -692,7 +692,7 @@ async def extract_certificate_data(
              raise HTTPException(status_code=400, detail="OpenRouter API Key not found. Please add it in Settings.")
         
         encrypted_key = profile_res.data["openrouter_key"]
-        api_key = decrypt_value(encrypted_key)
+        api_key = decrypt_value(encrypted_key).strip().replace('"', '').replace("'", "")
         
     except Exception as e:
         print(f"Profile Fetch/Decrypt Error: {e}")
@@ -1251,7 +1251,7 @@ async def trigger_cl_generation(job_id: str, variant: str = "professional", user
         profile_res = supabase.table("profiles").select("openrouter_key").eq("id", user.id).single().execute()
         if not profile_res.data or not profile_res.data.get("openrouter_key"):
              raise HTTPException(status_code=400, detail="OpenRouter API Key not found.")
-        api_key = decrypt_value(profile_res.data["openrouter_key"])
+        api_key = decrypt_value(profile_res.data["openrouter_key"]).strip().replace('"', '').replace("'", "")
 
         # Get JD
         job = supabase.table("jobs").select("description").eq("id", job_id).single().execute()

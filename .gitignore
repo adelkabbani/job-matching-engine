@@ -37,3 +37,19 @@ backend/.venv
 backend/venv
 .linkedin_session/
 backend/.linkedin_session/
+
+# Debug Scripts & Logs
+*debug*.txt
+*log*.txt
+backend/pid_*.txt
+backend/port_*.txt
+backend/server_*.txt
+backend/db_*.txt
+backend/readable_*.txt
+filter_jobs_error.txt
+check_*.py
+test_*.py
+read_*.py
+run_server.py
+create_missing_table.py
+start_servers.bat

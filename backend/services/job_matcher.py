@@ -14,13 +14,25 @@ def normalize_skill(skill: str) -> str:
 def get_detailed_user_skills(supabase, user_id: str) -> List[Dict]:
     """
     Aggregate all user skills from CV and certificates, with proficiency weighting and deduplication.
-    
-    Weights:
-    - CV Only: 70%
-    - Certificate Only: 80%
-    - Both CV + Certificate: 90%
-    - Priority Top-Tier Skills: +5-10% boost
+    Includes retry logic for database stability.
     """
+    import time
+    max_retries = 3
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            return _get_detailed_user_skills_exec(supabase, user_id)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"⚠️ [DB RETRY] Skill fetch failed (Attempt {attempt+1}/{max_retries}): {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                continue
+            print(f"❌ [DB ERROR] Final failure fetching skills: {e}")
+            raise
+
+def _get_detailed_user_skills_exec(supabase, user_id: str) -> List[Dict]:
+    """Internal execution for skill retrieval."""
     from services.dedup import deduplicate_skills, normalize_text
     
     cv_skills_raw = []

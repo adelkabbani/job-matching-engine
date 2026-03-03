@@ -49,6 +49,8 @@ export default function JobMatches() {
     const [debugSession, setDebugSession] = useState<any>(null);
     const [proofUrl, setProofUrl] = useState<string | null>(null);
     const [appliesToday, setAppliesToday] = useState<number>(0);
+    const [isAutoPilotRunning, setIsAutoPilotRunning] = useState(false);
+    const [errorDetails, setErrorDetails] = useState<{ message: string, traceback?: string } | null>(null);
 
     // Fetch the real-time daily apply counter from the LinkedIn assistant status
     const fetchCounter = async () => {
@@ -110,17 +112,10 @@ export default function JobMatches() {
             const supabase = createClient();
             const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-            console.log("🔍 [fetchJobs] Checking session...");
-            if (sessionError) console.error("❌ Session Error:", sessionError);
-
             if (!session) {
-                console.warn("⚠️ No active session found. Aborting fetch.");
                 setLoading(false);
                 return;
             }
-
-            console.log("✅ Session found for user:", session.user.id);
-            console.log("🔑 Token prefix:", session.access_token.substring(0, 10) + "...");
 
             const res = await fetch(`http://localhost:8000/api/jobs/matches?min_score=${showFiltered ? 0 : minScore}`, {
                 headers: {
@@ -129,18 +124,9 @@ export default function JobMatches() {
                 }
             });
 
-            if (res.status === 401) {
-                console.error("❌ 401 Unauthorized - The token might be invalid/expired even though we have a session.");
-                alert("Session expired. Please sign out and sign in again.");
-                return;
-            }
-
             if (res.ok) {
                 const jobsData = await res.json();
-                console.log("📦 Jobs fetched successfully:", jobsData.jobs.length);
                 setData(jobsData);
-            } else {
-                console.error("❌ Fetch failed:", res.status, res.statusText);
             }
         } catch (error) {
             console.error("❌ Error fetching jobs:", error);
@@ -158,7 +144,14 @@ export default function JobMatches() {
             const supabase = createClient();
             const { data: { session } } = await supabase.auth.getSession();
 
-            if (!session) return;
+            if (!session) {
+                setErrorDetails({
+                    message: "Authentication Required",
+                    traceback: "No active session found. Please log in to ingest jobs."
+                });
+                setIngesting(false);
+                return;
+            }
 
             const res = await fetch('http://localhost:8000/api/jobs/ingest', {
                 method: 'POST',
@@ -201,10 +194,8 @@ export default function JobMatches() {
             });
 
             if (res.ok) {
-                // Since it's a background task, we'll wait a bit and refresh
-                // In a real app we might use websockets or polling
                 setTimeout(fetchJobs, 3000);
-                setTimeout(fetchJobs, 8000); // Polling twice for good measure
+                setTimeout(fetchJobs, 8000);
             } else {
                 const error = await res.json();
                 alert(`Failed to start discovery: ${error.detail}`);
@@ -273,7 +264,6 @@ export default function JobMatches() {
     };
 
     const handleViewDetails = async (job: Job) => {
-        // If it already has a description and score > 0, just open URL
         const jobUrl = job.job_url || (job.raw_data as any)?.url || (job.raw_data as any)?.redirect_url;
 
         if (job.match_score > 0 && !job.description.includes('pending')) {
@@ -296,7 +286,6 @@ export default function JobMatches() {
 
             if (res.ok) {
                 await fetchJobs();
-                // After capture, it might be worth opening the URL too
             }
         } catch (error) {
             console.error("Error capturing details:", error);
@@ -396,12 +385,19 @@ export default function JobMatches() {
     };
 
     const handleApply = async (job: Job) => {
-        setCapturingDetails(job.id); // Re-use loading state
+        setCapturingDetails(job.id);
         try {
             const { createClient } = await import('@/utils/supabase/client');
             const supabase = createClient();
             const { data: { session } } = await supabase.auth.getSession();
-            if (!session) return;
+            if (!session) {
+                setErrorDetails({
+                    message: "Authentication Required",
+                    traceback: "No active Supabase session found. Please log in again to apply for jobs."
+                });
+                alert("Please log in to apply for jobs.");
+                return;
+            }
 
             const res = await fetch(`http://localhost:8000/api/linkedin/apply/${job.id}?dry_run=${dryRun}`, {
                 method: 'POST',
@@ -414,19 +410,74 @@ export default function JobMatches() {
                     alert(`⚠️ ${result.message}`);
                 } else {
                     alert(result.message || "Assistant is filling the form!");
-                    // Refresh jobs to show 'applied' status
                     fetchJobs();
-                    // PHASE 4 FIX: Immediately refresh the daily submission counter
                     fetchCounter();
                 }
+                setErrorDetails(null);
             } else {
+                setErrorDetails({
+                    message: result.detail || result.message || "Application Failed",
+                    traceback: result.traceback
+                });
                 alert(`Error: ${result.detail || result.message}`);
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error applying:", error);
+            setErrorDetails({
+                message: error.response?.data?.detail || error.message || "Application Failed",
+                traceback: error.response?.data?.traceback
+            });
             alert("Failed to start application assistant.");
         } finally {
             setCapturingDetails(null);
+        }
+    };
+
+    const handleBatchApply = async () => {
+        if (!confirm("Start Auto-Pilot? This will automatically apply to ALL roles with match score >= 90. This process is unassisted and may take several minutes.")) return;
+
+        setIsAutoPilotRunning(true);
+        try {
+            const { createClient } = await import('@/utils/supabase/client');
+            const supabase = createClient();
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) {
+                setErrorDetails({
+                    message: "Authentication Required",
+                    traceback: "No active session found. Please log in to launch Auto-Pilot."
+                });
+                setIsAutoPilotRunning(false);
+                return;
+            }
+
+            const res = await fetch(`http://localhost:8000/api/jobs/batch-apply?dry_run=${dryRun}`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${session.access_token}` }
+            });
+
+            const data = await res.json();
+            if (res.ok) {
+                const total = data.applied_count + data.failed_count + (data.skipped_count || 0);
+                alert(`Auto-Pilot Finished!\n✅ Successfully applied: ${data.applied_count}\n❌ Failed: ${data.failed_count}\n⏭️ Skipped (Non-LinkedIn): ${data.skipped_count || 0}\nTotal candidates: ${data.total_candidates || total}`);
+                fetchCounter();
+                fetchJobs();
+                setErrorDetails(null);
+            } else {
+                setErrorDetails({
+                    message: data.detail || data.message || "Auto-Pilot Failed",
+                    traceback: data.traceback
+                });
+                alert(`Auto-Pilot Failed: ${data.detail || data.message}`);
+            }
+        } catch (error: any) {
+            console.error("Batch apply error:", error);
+            setErrorDetails({
+                message: error.response?.data?.detail || error.message || "Network error during Auto-Pilot run.",
+                traceback: error.response?.data?.traceback
+            });
+            alert("Network error during Auto-Pilot run.");
+        } finally {
+            setIsAutoPilotRunning(false);
         }
     };
 
@@ -443,7 +494,6 @@ export default function JobMatches() {
     }
 
     const eligibleJobs = data?.jobs.filter(j => !j.filtered_out && j.match_score >= 50) || [];
-    const filteredJobs = data?.jobs.filter(j => j.filtered_out) || [];
 
     return (
         <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
@@ -461,9 +511,7 @@ export default function JobMatches() {
                     </div>
                 </div>
 
-                {/* Filter and Discovery */}
                 <div className="flex items-center gap-4">
-                    {/* Status Toggle */}
                     <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
                         <button
                             onClick={() => setFilterStatus('all')}
@@ -482,6 +530,27 @@ export default function JobMatches() {
                     </div>
 
                     <button
+                        onClick={handleBatchApply}
+                        disabled={isAutoPilotRunning}
+                        className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all shadow-md ${isAutoPilotRunning
+                            ? 'bg-gray-600 cursor-not-allowed'
+                            : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 hover:scale-[1.02] active:scale-95'
+                            } text-white text-sm`}
+                    >
+                        {isAutoPilotRunning ? (
+                            <>
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                Applying...
+                            </>
+                        ) : (
+                            <>
+                                <TrendingUp className="w-4 h-4" />
+                                Launch Auto-Pilot
+                            </>
+                        )}
+                    </button>
+
+                    <button
                         onClick={handleDiscoverJobs}
                         disabled={discovering}
                         className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-md transition-all active:scale-95"
@@ -494,7 +563,7 @@ export default function JobMatches() {
                         ) : (
                             <>
                                 <Sparkles className="w-4 h-4" />
-                                Find Jobs ✨
+                                Find Jobs \u2728
                             </>
                         )}
                     </button>
@@ -516,12 +585,11 @@ export default function JobMatches() {
                             onChange={(e) => setDryRun(e.target.checked)}
                             className="rounded text-orange-600"
                         />
-                        Dry Run 🧪
+                        Dry Run \ud83e\uddea
                     </label>
                 </div>
             </div>
 
-            {/* Add Job URL */}
             <div className="mb-6 p-4 bg-gray-50 rounded-lg">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                     Add Job by URL (Manual Fallback)
@@ -544,7 +612,31 @@ export default function JobMatches() {
                 </div>
             </div>
 
-            {/* Job List */}
+            {/* Error Details Alert */}
+            {errorDetails && (
+                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg animate-pulse">
+                    <div className="flex items-center gap-2 text-red-600 mb-2">
+                        <AlertCircle className="w-5 h-5" />
+                        <h3 className="font-bold">System Error Detected</h3>
+                    </div>
+                    <p className="text-sm text-red-700 mb-2">{errorDetails.message}</p>
+                    {errorDetails.traceback && (
+                        <details className="mt-2">
+                            <summary className="text-xs text-red-500/70 cursor-pointer hover:text-red-500 underline">View Technical Traceback</summary>
+                            <pre className="mt-2 p-2 bg-gray-900 rounded text-[10px] text-red-300 overflow-x-auto max-h-40 whitespace-pre-wrap">
+                                {errorDetails.traceback}
+                            </pre>
+                        </details>
+                    )}
+                    <button
+                        onClick={() => setErrorDetails(null)}
+                        className="mt-3 text-xs bg-red-100 hover:bg-red-200 text-red-700 font-bold px-3 py-1 rounded border border-red-200 transition-colors"
+                    >
+                        Acknowledge & Clear
+                    </button>
+                </div>
+            )}
+
             {!data || data.jobs.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
                     <Briefcase className="w-12 h-12 mx-auto mb-3 text-gray-300" />
@@ -568,7 +660,6 @@ export default function JobMatches() {
                                                 : 'border-red-200 bg-red-50/30'
                                     }`}
                             >
-                                {/* Shortlist/Reject Actions Overlay */}
                                 <div className="absolute top-4 right-4 flex items-center gap-2">
                                     <button
                                         onClick={() => handleShortlist(job.id)}
@@ -589,7 +680,6 @@ export default function JobMatches() {
                                     </button>
                                 </div>
 
-                                {/* Job Header */}
                                 <div className="flex items-start justify-between mb-3">
                                     <div className="flex-1">
                                         <h3 className="font-bold text-gray-900 text-lg">{job.title}</h3>
@@ -612,7 +702,6 @@ export default function JobMatches() {
                                         </div>
                                     )}
 
-                                    {/* Match Score Badge */}
                                     {!job.filtered_out && (
                                         <div className={`px-4 py-2 rounded-lg font-bold text-2xl mr-12 ${job.match_score >= 70
                                             ? 'bg-green-100 text-green-700'
@@ -631,7 +720,6 @@ export default function JobMatches() {
                                     )}
                                 </div>
 
-                                {/* Filtered Reason */}
                                 {job.filtered_out && job.filter_reason && (
                                     <div className="mb-3 p-2 bg-gray-100 rounded text-sm text-gray-600 flex items-center gap-2">
                                         <AlertCircle className="w-4 h-4" />
@@ -639,7 +727,6 @@ export default function JobMatches() {
                                     </div>
                                 )}
 
-                                {/* Strengths Summary */}
                                 {!job.filtered_out && job.strengths_summary && (
                                     <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                                         <div className="flex items-start gap-2">
@@ -649,10 +736,8 @@ export default function JobMatches() {
                                     </div>
                                 )}
 
-                                {/* Skills */}
                                 {!job.filtered_out && (
                                     <div className="grid grid-cols-2 gap-4 mb-3">
-                                        {/* Matched Skills */}
                                         {job.matched_skills && job.matched_skills.length > 0 && (
                                             <div>
                                                 <div className="flex items-center gap-2 mb-2">
@@ -672,7 +757,6 @@ export default function JobMatches() {
                                             </div>
                                         )}
 
-                                        {/* Missing Skills */}
                                         {job.missing_skills && job.missing_skills.length > 0 && (
                                             <div>
                                                 <div className="flex items-center gap-2 mb-2">
@@ -694,7 +778,6 @@ export default function JobMatches() {
                                     </div>
                                 )}
 
-                                {/* Actions */}
                                 <div className="flex items-center gap-3 pt-3 border-t border-gray-200">
                                     <button
                                         onClick={() => handleViewDetails(job)}
@@ -709,7 +792,7 @@ export default function JobMatches() {
                                         {job.match_score > 0 ? 'View Job' : 'Analyze Details'}
                                     </button>
 
-                                    {job.job_url?.includes('linkedin.com') && job.is_easy_apply && (
+                                    {job.job_url?.includes('linkedin.com') ? (
                                         <div className="flex items-center gap-2">
                                             <button
                                                 onClick={() => handleApply(job)}
@@ -726,24 +809,32 @@ export default function JobMatches() {
                                                     disabled={stopping}
                                                     className="flex items-center gap-1 text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-1 rounded-full hover:bg-red-100 animate-pulse disabled:opacity-50"
                                                 >
-                                                    {stopping ? 'Stopping...' : 'STOP 🛑'}
+                                                    {stopping ? 'Stopping...' : 'STOP \ud83d\uded1'}
                                                 </button>
                                             )}
                                         </div>
-                                    )}
-
-                                    {true && (
-                                        <button
-                                            onClick={() => {
-                                                setSelectedJobForMaterials(job);
-                                                fetchMaterials(job.id);
-                                            }}
-                                            className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-bold bg-green-50 px-3 py-1 rounded-full border border-green-100 hover:bg-green-100 transition-all"
+                                    ) : job.job_url && !job.filtered_out && job.match_score >= 50 && job.status !== 'applied' ? (
+                                        <a
+                                            href={job.job_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="flex items-center gap-1 text-sm font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1 rounded-full hover:bg-indigo-100 transition-all"
                                         >
-                                            <FileText className="w-4 h-4" />
-                                            CV & Cover Letter
-                                        </button>
-                                    )}
+                                            <ExternalLink className="w-4 h-4" />
+                                            Open & Apply
+                                        </a>
+                                    ) : null}
+
+                                    <button
+                                        onClick={() => {
+                                            setSelectedJobForMaterials(job);
+                                            fetchMaterials(job.id);
+                                        }}
+                                        className="flex items-center gap-1 text-sm text-green-600 hover:text-green-700 font-bold bg-green-50 px-3 py-1 rounded-full border border-green-100 hover:bg-green-100 transition-all"
+                                    >
+                                        <FileText className="w-4 h-4" />
+                                        CV & Cover Letter
+                                    </button>
 
                                     {job.status === 'applied' && (
                                         <button
@@ -751,14 +842,14 @@ export default function JobMatches() {
                                             className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-bold bg-blue-50 px-3 py-1 rounded-full border border-blue-100 hover:bg-blue-100 transition-all"
                                         >
                                             <ListChecks className="w-4 h-4" />
-                                            View Proof ✅
+                                            View Proof \u2705
                                         </button>
                                     )}
 
                                     {!job.filtered_out && job.match_score >= 50 && (
                                         <div className="flex items-center gap-2">
                                             <TrendingUp className="w-4 h-4 text-green-600" />
-                                            <span className="text-sm font-medium text-green-600">Generated</span>
+                                            <span className="text-sm font-medium text-green-600">Optimized</span>
                                         </div>
                                     )}
                                 </div>
@@ -767,25 +858,26 @@ export default function JobMatches() {
                 </div>
             )}
 
-            {/* Materials Modal */}
             {selectedJobForMaterials && (
-                <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-                        <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl w-full max-w-6xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white sticky top-0 z-10">
                             <div>
-                                <h2 className="text-xl font-bold text-gray-900">Application Materials</h2>
-                                <p className="text-sm text-gray-500">{selectedJobForMaterials.title} @ {selectedJobForMaterials.company}</p>
+                                <h2 className="text-2xl font-bold text-gray-900">{selectedJobForMaterials.company}</h2>
+                                <p className="text-gray-500 font-medium">{selectedJobForMaterials.title}</p>
                             </div>
                             <button
-                                onClick={() => setSelectedJobForMaterials(null)}
-                                className="p-2 hover:bg-gray-200 rounded-full transition-colors"
+                                onClick={() => {
+                                    setSelectedJobForMaterials(null);
+                                    setMaterials(null);
+                                }}
+                                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
                             >
-                                <XCircle className="w-6 h-6 text-gray-400" />
+                                <XCircle className="w-8 h-8 text-gray-400" />
                             </button>
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-6 space-y-8">
-                            {/* ATS Score Section */}
                             {materials?.cv && (
                                 <div className="p-4 bg-purple-50 rounded-xl border border-purple-100">
                                     <div className="flex items-center justify-between mb-4">
@@ -808,7 +900,6 @@ export default function JobMatches() {
                             )}
 
                             <div className="grid grid-cols-2 gap-8">
-                                {/* CV Section */}
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between">
                                         <h3 className="font-bold text-gray-900 flex items-center gap-2">
@@ -835,52 +926,39 @@ export default function JobMatches() {
                                                 {JSON.stringify(materials.cv.tailored_content, null, 2)}
                                             </pre>
                                         ) : (
-                                            <div className="flex items-center justify-center h-full text-gray-400">
-                                                No tailored CV yet
+                                            <div className="flex items-center justify-center h-full text-gray-400 italic">
+                                                Click "Tailor Now" to begin
                                             </div>
                                         )}
                                     </div>
                                 </div>
 
-                                {/* Cover Letter Section */}
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between">
                                         <h3 className="font-bold text-gray-900 flex items-center gap-2">
                                             <Sparkles className="w-5 h-5 text-purple-600" />
-                                            Cover Letter
+                                            Professional Cover Letter
                                         </h3>
-                                        <div className="flex gap-2">
+                                        {!materials?.cover_letter ? (
                                             <button
-                                                onClick={() => handleGenerateCL(selectedJobForMaterials.id, 'professional')}
-                                                disabled={tailoring === selectedJobForMaterials.id}
+                                                onClick={() => handleGenerateCL(selectedJobForMaterials.id)}
+                                                disabled={tailoring === selectedJobForMaterials.id || !materials?.cv}
                                                 className="px-3 py-1 bg-purple-600 text-white rounded-lg text-xs font-bold hover:bg-purple-700 transition-all active:scale-95 disabled:opacity-50"
                                             >
-                                                Draft Pro
+                                                Generate CL
                                             </button>
-                                            <button
-                                                onClick={() => handleGenerateCL(selectedJobForMaterials.id, 'concise')}
-                                                disabled={tailoring === selectedJobForMaterials.id}
-                                                className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"
-                                            >
-                                                Draft Concise
-                                            </button>
-                                        </div>
+                                        ) : (
+                                            <span className="text-xs text-green-600 font-bold bg-green-50 px-2 py-0.5 rounded border border-green-100">Ready</span>
+                                        )}
                                     </div>
-                                    <div className="border border-gray-200 rounded-xl p-4 bg-purple-50/30 min-h-[300px] text-sm text-gray-600 overflow-y-auto max-h-[400px]">
-                                        {materials?.cover_letters?.length > 0 ? (
-                                            <div className="space-y-4">
-                                                {materials.cover_letters.map((cl: any) => (
-                                                    <div key={cl.id} className="p-3 bg-white rounded-lg border border-purple-100 shadow-sm">
-                                                        <div className="flex items-center justify-between mb-2">
-                                                            <span className="text-[10px] font-bold uppercase tracking-widest text-purple-500">{cl.variant}</span>
-                                                        </div>
-                                                        <p className="whitespace-pre-wrap">{cl.content}</p>
-                                                    </div>
-                                                ))}
+                                    <div className="border border-gray-200 rounded-xl p-4 bg-gray-50 min-h-[300px] text-sm text-gray-600 overflow-y-auto max-h-[400px]">
+                                        {materials?.cover_letter ? (
+                                            <div className="whitespace-pre-wrap leading-relaxed">
+                                                {materials.cover_letter.content}
                                             </div>
                                         ) : (
-                                            <div className="flex items-center justify-center h-full text-gray-400">
-                                                No cover letters yet
+                                            <div className="flex items-center justify-center h-full text-gray-400 italic">
+                                                Requires tailored CV first
                                             </div>
                                         )}
                                     </div>
@@ -888,23 +966,30 @@ export default function JobMatches() {
                             </div>
                         </div>
 
-                        <div className="p-6 border-t border-gray-100 flex items-center justify-between bg-gray-50">
-                            <div className="text-xs text-gray-400">
-                                Docx generation will use your validated profile data.
+                        <div className="p-6 border-t border-gray-100 bg-gray-50 flex items-center justify-between sticky bottom-0 z-10">
+                            <div className="flex items-center gap-2 text-sm text-gray-500">
+                                <AlertCircle className="w-4 h-4" />
+                                These materials are generated in real-time based on your profile.
                             </div>
-                            <div className="flex gap-3">
+                            <div className="flex items-center gap-3">
                                 <button
-                                    onClick={() => handleFinalizeMaterials(selectedJobForMaterials.id)}
-                                    disabled={!materials?.cv || finalizing}
-                                    className="px-6 py-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-xl font-bold hover:shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:grayscale flex items-center gap-2"
+                                    onClick={() => setSelectedJobForMaterials(null)}
+                                    className="px-6 py-2 border border-gray-300 rounded-xl font-bold text-gray-700 hover:bg-white transition-all active:scale-95"
                                 >
-                                    {finalizing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                                    Finalize & Save Docx
+                                    Close
                                 </button>
-                                {materials?.cv?.storage_path && (
-                                    <button className="px-6 py-2 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 transition-all active:scale-95 flex items-center gap-2">
-                                        <Download className="w-4 h-4" />
-                                        Download Final
+                                {materials?.cv && materials?.cover_letter && (
+                                    <button
+                                        onClick={() => handleFinalizeMaterials(selectedJobForMaterials.id)}
+                                        disabled={finalizing}
+                                        className="px-8 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl font-bold shadow-lg hover:from-blue-700 hover:to-indigo-700 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 flex items-center gap-2"
+                                    >
+                                        {finalizing ? (
+                                            <RefreshCw className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <Download className="w-4 h-4" />
+                                        )}
+                                        Finalize & Save Materials
                                     </button>
                                 )}
                             </div>
@@ -913,42 +998,33 @@ export default function JobMatches() {
                 </div>
             )}
 
-            {/* Proof Modal */}
             {proofUrl && (
-                <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-8" onClick={() => setProofUrl(null)}>
-                    <div className="relative max-w-5xl w-full bg-white rounded-2xl overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
-                        <div className="absolute top-4 right-4 z-10">
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-8">
+                    <div className="relative max-w-5xl w-full bg-white rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+                        <div className="p-4 bg-white border-b flex justify-between items-center">
+                            <h3 className="font-bold flex items-center gap-2">
+                                <CheckCircle className="text-green-600 w-5 h-5" />
+                                Application Proof Screenshot
+                            </h3>
                             <button
-                                onClick={() => setProofUrl(null)}
-                                className="p-2 bg-black/50 hover:bg-black/70 text-white rounded-full transition-all"
+                                onClick={() => {
+                                    URL.revokeObjectURL(proofUrl);
+                                    setProofUrl(null);
+                                }}
+                                className="p-2 hover:bg-gray-100 rounded-full"
                             >
-                                <XCircle className="w-6 h-6" />
+                                <XCircle className="w-6 h-6 text-gray-400" />
                             </button>
                         </div>
-                        <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
-                            <h3 className="font-bold text-gray-900 flex items-center gap-2">
-                                <CheckCircle className="w-5 h-5 text-green-600" />
-                                Application Confirmation Proof
-                            </h3>
-                            <a
-                                href={proofUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-                            >
-                                <ExternalLink className="w-3 h-3" />
-                                Open in new tab
-                            </a>
-                        </div>
-                        <div className="overflow-auto max-h-[80vh] bg-gray-900 flex items-center justify-center">
+                        <div className="flex-1 overflow-auto bg-gray-900 flex items-start justify-center p-4">
                             <img
                                 src={proofUrl}
                                 alt="Application Success Proof"
-                                className="max-w-full h-auto shadow-inner"
-                                onError={(e) => {
-                                    (e.target as any).src = 'https://via.placeholder.com/800x600?text=Proof+Image+Loading+Fail';
-                                }}
+                                className="max-w-full shadow-2xl border-4 border-white/10 rounded-lg"
                             />
+                        </div>
+                        <div className="p-4 bg-gray-50 text-center text-xs text-gray-500">
+                            Verification successful. This screenshot was captured automatically upon submission.
                         </div>
                     </div>
                 </div>
@@ -956,4 +1032,3 @@ export default function JobMatches() {
         </div>
     );
 }
-

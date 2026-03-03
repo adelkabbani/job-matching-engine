@@ -21,9 +21,66 @@ import requests
 from typing import List, Dict, Tuple
 from services.job_scraper import apply_filters
 from services.job_matcher import get_user_skills, extract_skills_from_description, generate_match_report
+import threading
+import asyncio
+from services.cv_tailor import tailor_cv
+from services.llm import generate_cover_letter
 
 # Constants
 ADZUNA_BASE_URL = "https://api.adzuna.com/v1/api/jobs/de/search"  # Focus on Germany
+
+def background_tailor_task(job_id: str, user_id: str, supabase):
+    """
+    Non-blocking background worker to pre-generate materials.
+    """
+    try:
+        print(f"🧵 [BG] Starting immediate tailoring for job {job_id}...")
+        # 1. Get JD and User Info
+        job = supabase.table("jobs").select("*").eq("id", job_id).single().execute()
+        if not job.data: return
+        
+        from services.job_matcher import get_user_skills
+        user_skills = get_user_skills(supabase, user_id)
+        
+        # Get latest CV structured data
+        cv_res = supabase.table("documents").select("id").eq("user_id", user_id).eq("doc_type", "cv").order("created_at", desc=True).limit(1).execute()
+        if not cv_res.data: return
+        
+        struct_res = supabase.table("cv_structured_data").select("parsed_data").eq("document_id", cv_res.data[0]["id"]).single().execute()
+        if not struct_res.data: return
+        
+        # 2. Tailor CV
+        tailored = tailor_cv(job.data['description'], struct_res.data['parsed_data'], user_skills)
+        
+        # 3. Save CV Version
+        record = {
+            "user_id": user_id,
+            "job_id": job_id,
+            "tailored_content": tailored,
+            "keywords_found": tailored['ats_metadata']['keywords_found'],
+            "keywords_missing": tailored['ats_metadata']['keywords_missing'],
+            "ats_score": int((len(tailored['ats_metadata']['keywords_found']) / max(1, len(tailored['ats_metadata']['keywords_found']) + len(tailored['ats_metadata']['keywords_missing']))) * 100)
+        }
+        supabase.table("cv_versions").upsert(record, on_conflict="user_id,job_id").execute()
+        
+        # 4. Generate CL
+        profile_res = supabase.table("profiles").select("openrouter_key").eq("id", user_id).single().execute()
+        if profile_res.data and profile_res.data.get("openrouter_key"):
+            from utils.encryption import decrypt_value
+            api_key = decrypt_value(profile_res.data["openrouter_key"]).strip().replace('"', '').replace("'", "")
+            content = generate_cover_letter(job.data['description'], tailored, api_key, "professional")
+            
+            cl_record = {
+                "user_id": user_id,
+                "job_id": job_id,
+                "variant": "professional",
+                "content": content
+            }
+            supabase.table("cover_letters").upsert(cl_record, on_conflict="user_id,job_id,variant").execute()
+            
+        print(f"✅ [BG] Successfully pre-tailored job {job_id}")
+    except Exception as e:
+        print(f"❌ [BG] Tailoring error for {job_id}: {e}")
 
 
 def search_jobs(query: str, location: str = "Berlin") -> List[Dict]:
@@ -280,8 +337,14 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
                     'status': 'scraped'
                 }
                 
-                supabase.table("jobs").insert(job_record).execute()
+                res = supabase.table("jobs").insert(job_record).execute()
                 new_jobs_count += 1
+                
+                # AUTO-PILOT: Immediate Background Tailoring for high match scores
+                if match_report['match_score'] >= 80 and res.data:
+                    new_job_id = res.data[0]['id']
+                    threading.Thread(target=background_tailor_task, args=(new_job_id, user_id, supabase), daemon=True).start()
+                    print(f"🚀 Triggered background tailoring for {job_data.get('title')} (Score: {match_report['match_score']})")
             except Exception as inner_e:
                 import traceback
                 print(f"==================================================")

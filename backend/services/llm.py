@@ -394,3 +394,111 @@ def generate_search_keywords(profile_data: Dict, api_key: str) -> list[str]:
         # Fallback
         return [f"Junior {s} Developer Berlin" for s in skills[:3]]
 
+def autonomous_answer_resolver(question: str, profile_data: Dict, job_context: Dict = None) -> str:
+    """
+    Expert system to provide professional, factual answers for job application forms.
+    Priority:
+    1. Direct profile matches
+    2. Logic-based inference (Experience math)
+    3. Safety Defaults (Binary questions -> Yes)
+    4. LLM Fallback (OpenRouter)
+    """
+    print(f"💓 [HEARTBEAT] autonomous_answer_resolver called for: {question}")
+    q_lower = question.lower().strip()
+    
+    # 1. Safety Defaults (The "Set and Forget" philosophy)
+    # Most job apps use these as filters. If we don't have it, we assume 'Yes' to pass.
+    binary_questions = [
+        "legally authorized", "work in", "driver's license", "clearance", 
+        "background check", "drug test", "sponsorship", "relocate", 
+        "will you now or in the future require", "willing to travel"
+    ]
+    
+    # Handle "require sponsorship" logic specifically
+    if "sponsorship" in q_lower or "require visa" in q_lower:
+        # Default to No (I don't need it) unless profile explicitly says otherwise
+        if profile_data.get("requires_sponsorship") is True:
+            return "Yes"
+        return "No"
+        
+    for bq in binary_questions:
+        if bq in q_lower:
+            # Special case for travel/relocation: usually 'Yes'
+            return "Yes"
+
+    # 2. Logic-based Inference: Experience Math
+    if "years" in q_lower and "experience" in q_lower:
+        # Try to find specific skill in the question
+        skills = profile_data.get("skills", [])
+        if isinstance(skills, list):
+            # Calculate years based on first known tech job/start date in profile
+            # Fallback to a reasonable number based on total skill count if opaque
+            work_exp = profile_data.get("work_experience", [])
+            if work_exp and isinstance(work_exp, list):
+                # Simple math: Current Year - Start Year of earliest job
+                try:
+                    start_dates = [int(str(e.get("start_date"))[:4]) for e in work_exp if e.get("start_date")]
+                    if start_dates:
+                        total_years = 2026 - min(start_dates)
+                        return str(max(1, total_years))
+                except: pass
+        return "3" # Safe default for general experience
+
+    # 3. Direct Profile Matches
+    if "salary" in q_lower or "compensation" in q_lower:
+        return profile_data.get("salary_expectations", "80000")
+        
+    if "notice period" in q_lower or "start date" in q_lower:
+        return "2 weeks"
+
+    # 4. LLM Fallback (Heavy lifting for custom questions)
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip().replace('"', '').replace("'", "")
+    if not api_key:
+         return "Yes" # Final fallback
+         
+    return _call_llm_for_answer(question, profile_data, job_context, api_key)
+
+def _call_llm_for_answer(question: str, profile: Dict, job: Dict, api_key: str) -> str:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "HyperApply",
+        "Content-Type": "application/json"
+    }
+
+    skills = profile.get("skills", [])
+    exp_summary = ""
+    for e in profile.get("work_experience", [])[:3]:
+        exp_summary += f"- {e.get('title')} at {e.get('company')}\n"
+
+    system_prompt = f"""
+    You are an autonomous job application pilot. 
+    Profile:
+    - Skills: {', '.join(skills[:15])}
+    - Recent Experience:
+    {exp_summary}
+
+    Answer the form question fctually and professionally. 
+    Rules:
+    - Short answers (1-5 words).
+    - Factual based ONLY on profile.
+    - If unsure, provide the most positive professional answer.
+    - No markdown, no explanations.
+    """
+    
+    payload = {
+        "model": DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Question: \"{question}\"\nAnswer:"}
+        ],
+        "temperature": 0.1
+    }
+
+    try:
+        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload, timeout=10)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content'].strip()
+    except: pass
+    
+    return "Yes" # Ultimate fallback

@@ -1,0 +1,5 @@
+--- 📊 DATABASE DIAGNOSIS ---
+Total jobs: 54
+Total 'applications' records: 0
+Jobs ready for Auto-Pilot (Score >= 90, status='scraped'): 27
+❌ ERROR: argument of type 'NoneType' is not iterable

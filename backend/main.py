@@ -59,6 +59,44 @@ except ImportError:
     from backend.services.doc_generator import generate_cv_docx, generate_cover_letter_docx
 
 app = FastAPI()
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+# Global Exception Middleware for Verbose Debugging
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        response = await call_next(request)
+        if response.status_code >= 400:
+            # Optionally log non-200 responses if they indicate a pattern of failure
+            pass
+        return response
+    except HTTPException as he:
+        # Catch explicit HTTPExceptions (like 401, 403, 404)
+        error_trace = traceback.format_exc()
+        log_path = os.path.join(os.getcwd(), ".tmp", "backend_errors.log")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().isoformat()}] HTTP EXCEPTION {he.status_code}: {he.detail} | URL: {request.url}\n")
+        raise he
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print("\n" + "!"*60)
+        print(f"🔥 GLOBAL EXCEPTION CAUGHT: {e}")
+        print(f"URL: {request.url}")
+        print(f"TRACEBACK:\n{error_trace}")
+        print("!"*60 + "\n")
+        
+        # Log to local file
+        log_path = os.path.join(os.getcwd(), ".tmp", "backend_errors.log")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().isoformat()}] URL: {request.url}\n{error_trace}\n")
+            
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal Server Error: {str(e)}", "traceback": error_trace}
+        )
 
 # Mount static logs directory for proof access
 LOGS_DIR = os.path.join(os.getcwd(), ".tmp", "logs", "applications")
@@ -571,8 +609,12 @@ async def extract_cv_data(
         
         # We need to check if it exists or use upsert. 
         # The schema has UNIQUE(document_id), so upsert works.
-        supabase.table("cv_structured_data").upsert(structured_record, on_conflict="document_id").execute()
-        print("💾 Saved to cv_structured_data (with AI version)")
+        try:
+            supabase.table("cv_structured_data").upsert(structured_record, on_conflict="document_id").execute()
+            print("💾 Saved to cv_structured_data (with AI version)")
+        except Exception as e:
+            print(f"❌ [DB ERROR] CV Upsert Failed: {e}")
+            raise
 
         return {
             "status": "success",
@@ -727,8 +769,12 @@ async def extract_certificate_data(
             "updated_at": "now()"
         }
         
-        supabase.table("certificate_structured_data").upsert(structured_record, on_conflict="document_id").execute()
-        print("💾 Saved to certificate_structured_data")
+        try:
+            supabase.table("certificate_structured_data").upsert(structured_record, on_conflict="document_id").execute()
+            print("💾 Saved to certificate_structured_data")
+        except Exception as e:
+            print(f"❌ [DB ERROR] Cert Upsert Failed: {e}")
+            raise
 
         return {
             "status": "success",
@@ -1115,7 +1161,11 @@ async def shortlist_job(
 ):
     """Mark a job as shortlisted."""
     try:
-        supabase.table("jobs").update({"status": "shortlisted"}).eq("id", job_id).eq("user_id", user.id).execute()
+        try:
+            supabase.table("jobs").update({"status": "shortlisted"}).eq("id", job_id).eq("user_id", user.id).execute()
+        except Exception as e:
+            print(f"❌ [DB ERROR] Shortlist Failed: {e}")
+            raise
         return {"status": "success", "job_id": job_id}
     except Exception as e:
         import traceback
@@ -1130,7 +1180,11 @@ async def reject_job(
 ):
     """Mark a job as rejected."""
     try:
-        supabase.table("jobs").update({"status": "rejected"}).eq("id", job_id).eq("user_id", user.id).execute()
+        try:
+            supabase.table("jobs").update({"status": "rejected"}).eq("id", job_id).eq("user_id", user.id).execute()
+        except Exception as e:
+            print(f"❌ [DB ERROR] Reject Failed: {e}")
+            raise
         return {"status": "success", "job_id": job_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1173,6 +1227,100 @@ async def stop_linkedin_actions(
         request_stop()
         return {"status": "success", "message": "Stop requested."}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/jobs/batch-apply")
+async def batch_apply_jobs(
+    dry_run: bool = False,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Auto-Pilot Trigger: Fetch all ≥90% matches and apply automatically.
+    """
+    try:
+        jobs_res = supabase.table("jobs")\
+            .select("*")\
+            .eq("user_id", user.id)\
+            .gte("match_score", 90)\
+            .eq("status", "scraped")\
+            .execute()
+            
+        if not jobs_res.data:
+            return {"status": "success", "applied_count": 0, "failed_count": 0, "message": "No high-match jobs found for batch apply."}
+            
+        jobs_to_apply = jobs_res.data
+        print(f"🚀 [AUTO-PILOT] Found {len(jobs_to_apply)} high-match candidates.")
+        
+        from services.linkedin_assistant import autofill_easy_apply_modal, launch_linkedin_browser
+        import random
+        import asyncio
+        
+        # Ensure browser is up
+        await launch_linkedin_browser()
+        
+        success_count = 0
+        failure_count = 0
+        skipped_count = 0
+        results = []
+        
+        for job in jobs_to_apply:
+            job_id = job['id']
+            job_url = job.get('job_url') or ""
+            
+            # PHASE 3: Strict LinkedIn Filtering
+            if "linkedin.com/jobs/view/" not in job_url:
+                print(f"⏭️ [AUTO-PILOT] Skipping {job.get('title')}: Non-LinkedIn Platform.")
+                # Mark as failed in DB with clear reason
+                supabase.table("jobs").update({
+                    "status": "failed",
+                    "filter_reason": "Non-LinkedIn Platform"
+                }).eq("id", job_id).execute()
+                
+                results.append({"job_id": job_id, "status": "failed", "message": "Source not supported (LinkedIn only)."})
+                skipped_count += 1
+                continue
+                
+            if not job.get('is_easy_apply'):
+                print(f"⏭️ [AUTO-PILOT] Skipping {job.get('title')}: Not marked as Easy Apply.")
+                results.append({"job_id": job_id, "status": "skipped", "message": "Skipped: Not an Easy Apply role."})
+                skipped_count += 1
+                continue
+
+            print(f"🤖 [AUTO-PILOT] Applying to: {job.get('title')} @ {job.get('company')}")
+            
+            try:
+                # PHASE 19/20: Pass dry_run
+                res = await autofill_easy_apply_modal(job_id=job_id, user_id=user.id, supabase=supabase, dry_run=dry_run)
+                results.append({"job_id": job_id, "status": res.get("status"), "message": res.get("message")})
+                
+                if res.get("status") == "success":
+                    success_count += 1
+                    supabase.table("jobs").update({"status": "applied"}).eq("id", job_id).execute()
+                else:
+                    failure_count += 1
+                    print(f"⚠️ [AUTO-PILOT] Job {job_id} failed: {res.get('message')}")
+            except Exception as e:
+                failure_count += 1
+                error_trace = traceback.format_exc()
+                print(f"❌ [AUTO-PILOT] CRITICAL ERROR on job {job_id}:\n{error_trace}")
+                results.append({"job_id": job_id, "status": "error", "message": str(e)})
+            
+            # Intelligent Delay
+            delay = random.uniform(30, 60) if dry_run else random.uniform(60, 180)
+            print(f"⏳ [AUTO-PILOT] Waiting {delay:.1f}s...")
+            await asyncio.sleep(delay)
+            
+        return {
+            "status": "success", 
+            "applied_count": success_count, 
+            "failed_count": failure_count,
+            "skipped_count": skipped_count,
+            "total_candidates": len(jobs_to_apply),
+            "details": results
+        }
+
+    except Exception as e:
+        print(f"Batch Apply Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
@@ -1269,7 +1417,11 @@ async def trigger_cl_generation(job_id: str, variant: str = "professional", user
             "variant": variant,
             "content": content
         }
-        supabase.table("cover_letters").upsert(record, on_conflict="user_id,job_id,variant").execute()
+        try:
+            supabase.table("cover_letters").upsert(record, on_conflict="user_id,job_id,variant").execute()
+        except Exception as e:
+            print(f"❌ [DB ERROR] CL Upsert Failed: {e}")
+            raise
         
         return {"status": "success", "content": content}
     except Exception as e:
@@ -1329,7 +1481,11 @@ async def submit_question_answer(
             "answer_text": data["answer_text"],
             "category": data.get("category", "general")
         }
-        supabase.table("linkedin_question_bank").upsert(update_data, on_conflict="user_id,question_text").execute()
+        try:
+            supabase.table("linkedin_question_bank").upsert(update_data, on_conflict="user_id,question_text").execute()
+        except Exception as e:
+            print(f"❌ [DB ERROR] Question Bank Upsert Failed: {e}")
+            raise
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1338,11 +1494,19 @@ async def submit_question_answer(
 @app.get("/api/applications/{job_id}/proof")
 async def get_application_proof(job_id: str, user = Depends(get_current_user)):
     """Returns the success screenshot for an application if it exists."""
-    proof_path = os.path.join(LOGS_DIR, job_id, "success_proof.png")
+    # Try both absolute and relative paths to LOGS_DIR
+    proof_filename = "success_proof.png"
+    proof_path = os.path.join(LOGS_DIR, job_id, proof_filename)
+    
     if os.path.exists(proof_path):
         return FileResponse(proof_path)
     
-    # Fallback: check if DB has a custom path
+    # Fallback: Check .tmp/logs/applications/job_id directly
+    fallback_path = Path(".tmp/logs/applications") / job_id / proof_filename
+    if fallback_path.exists():
+        return FileResponse(str(fallback_path))
+        
+    raise HTTPException(status_code=404, detail="Proof screenshot not found.")
     res = supabase.table("applications").select("success_screenshot_path").eq("job_id", job_id).eq("user_id", user.id).single().execute()
     if res.data and res.data.get("success_screenshot_path"):
         db_path = res.data["success_screenshot_path"]

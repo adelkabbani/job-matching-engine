@@ -113,6 +113,23 @@ async def launch_linkedin_browser():
     print(f"🚀 LinkedIn Assistant launched. Profile saved in: {USER_DATA_DIR}")
     return True
 
+async def navigate_linkedin_to(url: str):
+    """
+    Directs the active LinkedIn Assistant browser to a specific URL.
+    """
+    global _browser_context
+    if not _browser_context:
+        print("❌ Navigate failed: Browser not launched.")
+        return False
+    
+    pages = _browser_context.pages
+    if pages:
+        page = pages[0]
+        print(f"🌐 Navigating backend browser to: {url}")
+        await page.goto(url, wait_until="networkidle")
+        return True
+    return False
+
 async def stop_linkedin_browser():
     """Close the browser and cleanup."""
     global _browser_context, _playwright, _stop_requested
@@ -164,158 +181,127 @@ async def _rate_limit_check():
     _actions_this_minute += 1
 
 async def capture_current_search_results(user_id: str, supabase) -> Dict:
-    """
-    Scrapes jobs from the current active LinkedIn Search tab.
-    """
     global _browser_context
-    
-    debug_log_path = os.path.join(os.getcwd(), "linkedin_capture_debug.log")
-    
-    def log(msg):
-        with open(debug_log_path, "a", encoding="utf-8") as f:
-            f.write(f"{msg}\n")
-        print(msg)
-
-    log(f"\n--- Starting Capture for User {user_id} ---")
-    
     if not _browser_context:
-        log("❌ Error: Browser not launched. Call launch first.")
-        return {"status": "error", "message": "Browser not launched. Call launch first."}
+        return {"status": "error", "message": "Browser not launched."}
 
-    # Find the tab that is on LinkedIn Search
     pages = _browser_context.pages
-    log(f"📄 Number of open pages: {len(pages)}")
-    target_page = None
-    for p in pages:
-        log(f"🔗 Checking page: {p.url}")
-        if "linkedin.com/jobs/search" in p.url or "linkedin.com/jobs/collections" in p.url:
-            target_page = p
-            break
+    target_page = next((p for p in pages if "linkedin.com/jobs/search" in p.url), None)
     
     if not target_page:
-        log("❌ Error: No active LinkedIn search tab found.")
-        return {"status": "error", "message": "No active LinkedIn search tab found. Please navigate to a job search first."}
+        return {"status": "error", "message": "No active LinkedIn search tab found. Please stay on the Job Search page."}
 
-    print(f"🕵️ Analyzing search results on: {target_page.url}")
-    
-    # Mirror browser console to our log for deep debugging
-    target_page.on("console", lambda msg: log(f"[BROWSER CONSOLE] {msg.text}"))
-    
-    # 1. FORCE SCROLL: This "wakes up" the lazy-loading cards
+    print(f"🕵️ Hybrid Hyper-Resilient Scan starting on: {target_page.url}")
+
+    # Re-enable console mirroring
+    target_page.on("console", lambda msg: print(f"  [BROWSER] {msg.text}"))
+
+    # 1. FORCE LOADING (Lazy Load Killer)
+    # Strategy: Side-panel scroll + user's Human-Mimic mouse wheel
     await target_page.evaluate('''async () => {
-        const list = document.querySelector('.jobs-search-results-list') || 
-                     document.querySelector('.scaffold-layout__list') ||
-                     document.querySelector('[scrollable="true"]');
-        if (list) {
-            console.log("🖱️ Starting advanced diagnostic scroll...");
-            for (let i = 0; i < 4; i++) {
-                list.scrollTop += 1200;
-                await new Promise(r => setTimeout(r, 500));
+        const listSelectors = ['.jobs-search-results-list', 'div[class*="jobs-search-results-list"]', 'section[aria-label="results"]'];
+        let container = listSelectors.map(s => document.querySelector(s)).find(el => !!el);
+        if (container) {
+            console.log("🖱️ Side-panel container found, scrolling...");
+            for (let i = 0; i < 5; i++) {
+                container.scrollTop += 1200;
+                await new Promise(r => setTimeout(r, 400));
             }
-            list.scrollTop = 0;
-            console.log("✅ Advanced scroll complete.");
-        } else {
-            window.scrollBy(0, 1000);
-            await new Promise(r => setTimeout(r, 1000));
+            container.scrollTop = 0;
         }
     }''')
+    
+    # User's requested Human-Mimic Scrolling
+    await target_page.mouse.wheel(0, 4000) # Quick scroll to bottom
+    await asyncio.sleep(1)
+    await target_page.mouse.wheel(0, -4000) # Scroll back up
+    await asyncio.sleep(1)
 
-    # Wait for DOM to settle after scroll
-    await asyncio.sleep(2)
-
-    # 2. DEEP CAPTURE: Using 2025-ready selectors
+    # 2. HYBRID EXTRACTION
     jobs = await target_page.evaluate('''() => {
         const results = [];
-        const cards = document.querySelectorAll('.jobs-search-results-list__list-item, .job-card-container, [data-job-id], .scaffold-layout__list-item');
+        const seenUrls = new Set();
         
+        // --- Strategy A: Tracking Engine (Stable Components) ---
+        const cards = Array.from(document.querySelectorAll('[data-view-name="job-search-job-card"], .job-card-container'));
         cards.forEach(card => {
-            // Find Title & URL via multiple fallbacks
-            const titleEl = card.querySelector('a[href*="/jobs/view/"], .job-card-list__title, .artdeco-entity-lockup__title a');
-            const companyEl = card.querySelector('.job-card-container__company-name, .artdeco-entity-lockup__subtitle, [class*="company-name"]');
-            
-            if (titleEl && titleEl.href) {
-                const idMatch = titleEl.href.match(/\\/view\\/(\\d+)/) || titleEl.href.match(/\\d{8,}/);
-                const id = idMatch ? idMatch[0].replace(/\\D/g, '') : null;
-                const cleanUrl = id ? `https://www.linkedin.com/jobs/view/${id}/` : titleEl.href.split('?')[0];
+            try {
+                const trackingStr = card.getAttribute('data-view-tracking-scope') || "";
+                const idMatch = trackingStr.match(/normalized_jobPosting:(\\d+)/) || 
+                               trackingStr.match(/jobPosting:(\\d+)/);
+                
+                if (idMatch) {
+                    const jobId = idMatch[1];
+                    const url = `https://www.linkedin.com/jobs/view/${jobId}/`;
+                    if (seenUrls.has(url)) return;
 
-                results.push({
-                    id: id,
-                    title: titleEl.innerText.trim().split('\\n')[0],
-                    company: companyEl ? companyEl.innerText.trim().split('\\n')[0] : 'Unknown',
-                    url: cleanUrl,
-                    is_easy_apply: card.innerText.includes('Easy Apply') || !!card.querySelector('[aria-label*="Easy Apply"]')
-                });
-            }
+                    const titleEl = card.querySelector('p[class*="title"], .job-card-list__title, .artdeco-entity-lockup__title');
+                    const companyEl = card.querySelector('p[class*="company"], [class*="company-name"], .artdeco-entity-lockup__subtitle');
+                    
+                    const title = titleEl ? titleEl.innerText.trim() : card.innerText.split('\\n')[0];
+                    const company = companyEl ? companyEl.innerText.trim() : "Unknown";
+                    const isEasyApply = card.innerText.includes('Easy Apply');
+
+                    seenUrls.add(url);
+                    results.push({ title, company, url, is_easy_apply: isEasyApply, method: "TrackingEngine" });
+                }
+            } catch (e) {}
         });
+
+        // --- Strategy B: Selector Fallback (User's Link-first logic) ---
+        const allLinks = Array.from(document.querySelectorAll('a[href*="/jobs/view/"]'));
+        allLinks.forEach(link => {
+            const url = link.href.split('?')[0];
+            if (seenUrls.has(url)) return;
+            
+            const card = link.closest('.job-card-container, .jobs-search-results-list__list-item, li');
+            if (!card) return;
+
+            const title = link.innerText.trim().split('\\n')[0];
+            if (title.length < 5) return; 
+
+            const companySelectors = ['.job-card-container__company-name', '.artdeco-entity-lockup__subtitle', '.job-card-container__primary-description'];
+            let company = "Unknown Company";
+            for (const s of companySelectors) {
+                const el = card.querySelector(s);
+                if (el) { company = el.innerText.trim(); break; }
+            }
+
+            const isEasyApply = card.innerText.includes('Easy Apply');
+
+            seenUrls.add(url);
+            results.push({ title, company, url, is_easy_apply: isEasyApply, method: "LinkFallback" });
+        });
+
         return results;
     }''')
 
-    # 3. DEBUG DUMP: If it fails, save the HTML for offline inspection
     if not jobs:
-        log("❌ Capture failed. Saving page HTML for diagnostic...")
         content = await target_page.content()
-        debug_html_path = os.path.join(os.getcwd(), "debug_capture.html")
-        with open(debug_html_path, "w", encoding="utf-8") as f:
+        with open("debug_capture.html", "w", encoding="utf-8") as f:
             f.write(content)
-        log(f"📁 Diagnostic file created: {debug_html_path}")
-        return {"status": "error", "message": "Capture failed. Diagnostic file 'debug_capture.html' created."}
+        return {"status": "error", "message": "Still 0 jobs found. See debug_capture.html"}
 
-    log(f"✅ Found {len(jobs)} jobs on page using heuristic engine. Processing...")
-    # For MVP, we'll try to get descriptions if the user has clicked them or we can fetch them
-    # For now, we'll just ingest them. In Track B, we can navigate to each URL if needed.
-    
-    user_skills = get_user_skills(supabase, user_id)
-    filters_res = supabase.table("job_filters").select("*").eq("user_id", user_id).single().execute()
-    user_filters = filters_res.data
-    
-    new_count = 0
-    for job in jobs:
-        # Check uniqueness - Correct column name is job_url
-        log(f"🧐 Checking uniqueness for: {job['url']}")
+    # 3. DB INGESTION
+    count = 0
+    for j in jobs:
         try:
-            existing = supabase.table("jobs").select("id").eq("user_id", user_id).eq("job_url", job['url']).execute()
-            if existing.data:
-                log(f"⏭️ Skipping duplicate: {job['url']}")
-                continue
+            data = {
+                "user_id": user_id,
+                "title": j['title'],
+                "company": j['company'],
+                "job_url": j['url'],
+                "status": "scraped",
+                "is_easy_apply": j['is_easy_apply'],
+                "match_score": 100 
+            }
+            supabase.table("jobs").upsert(data, on_conflict="job_url").execute()
+            count += 1
+            print(f"  [DB] Ingested via {j['method']}: {j['title']}")
         except Exception as e:
-            log(f"❌ Error checking uniqueness: {e}")
-            continue
-            
-        # For a full score, we ideally need the description. 
-        # For capture MVP, we'll just save the basic info and the user can click "Score" later, 
-        # OR we fetch it now. Let's try to fetch it now for the best UX.
-        
-        # Note: Fetching descriptions requires a bit of wait/clicking in the browser
-        # For simplicity in Phase 1 of Phase 7, we'll just store and use a placeholder/partial if available.
-        
-        job_record = {
-            'user_id': user_id,
-            'title': job['title'],
-            'company': job['company'],
-            'description': "Full description pending... (Click View Job to see more)", 
-            'job_url': job['url'],
-            'source': 'linkedin_assistant',
-            'location': job['location'],
-            'is_easy_apply': job['is_easy_apply'],
-            'match_score': 51, # Visible by default (UI minScore is usually 50)
-            'filtered_out': False,
-            'status': 'scraped'
-        }
-        
-        try:
-            log(f"📥 Inserting job: {job['title']} (Easy Apply: {job['is_easy_apply']})")
-            insert_res = supabase.table("jobs").insert(job_record).execute()
-            if insert_res.data:
-                new_count += 1
-                log(f"✅ Inserted: {job['title']}")
-            else:
-                log(f"⚠️ Insertion returned no data for: {job['title']}")
-        except Exception as e:
-            log(f"❌ Error inserting job: {e}")
-            
-    log(f"🏁 Finished capture. New jobs: {new_count}")
+            print(f"Error saving job: {e}")
 
-    return {"status": "success", "count": new_count, "jobs": jobs}
+    return {"status": "success", "count": count, "message": f"Success! Captured {count} jobs via Hybrid Engine."}
 
 async def capture_job_details(job_id: str, user_id: str, supabase) -> Dict:
     """

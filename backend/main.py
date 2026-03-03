@@ -1140,6 +1140,26 @@ async def stop_linkedin(user: dict = Depends(get_current_user)):
         print(f"Error stopping LinkedIn: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/linkedin/navigate")
+async def navigate_linkedin(request: dict, user: dict = Depends(get_current_user)):
+    """Navigate the assisted LinkedIn browser to a URL."""
+    try:
+        url = request.get("url")
+        if not url:
+            raise HTTPException(status_code=400, detail="Missing URL")
+        
+        from services.linkedin_assistant import navigate_linkedin_to
+        success = await navigate_linkedin_to(url)
+        if not success:
+            raise HTTPException(status_code=400, detail="Navigation failed (browser not running?)")
+            
+        return {"status": "success", "message": f"Navigated to {url}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error navigating LinkedIn: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/linkedin/capture")
 async def capture_linkedin(user: dict = Depends(get_current_user)):
     """Capture search results from the active LinkedIn tab."""
@@ -1241,7 +1261,7 @@ async def batch_apply_jobs(
         jobs_res = supabase.table("jobs")\
             .select("*")\
             .eq("user_id", user.id)\
-            .gte("match_score", 90)\
+            .gte("match_score", 50)\
             .eq("status", "scraped")\
             .execute()
             

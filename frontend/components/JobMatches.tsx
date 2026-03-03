@@ -434,7 +434,7 @@ export default function JobMatches() {
     };
 
     const handleBatchApply = async () => {
-        if (!confirm("Start Auto-Pilot? This will automatically apply to ALL roles with match score >= 90. This process is unassisted and may take several minutes.")) return;
+        if (!confirm("Start Auto-Pilot? This will automatically apply to ALL roles with match score >= 50. This process is unassisted and may take several minutes.")) return;
 
         setIsAutoPilotRunning(true);
         try {

@@ -28,18 +28,22 @@ async def autofill_universal_form(
         print("🕵️ [UNIVERSAL-PILOT] Adzuna landing page detected. Navigating to company site...")
         try:
             await page.goto(job_url, wait_until="networkidle")
-            # Try common Adzuna "Apply" buttons
+            # Try common Adzuna "Apply" buttons (English & German)
             adzuna_apply_selectors = [
-                'a:has-text("Apply on company site")',
-                'a:has-text("View job")',
-                '.apply-button',
-                '#apply_button'
+                 'a:has-text("Apply on company site")',
+                 'a:has-text("View job")',
+                 'a:has-text("Original-Anzeige")',
+                 'a:has-text("Auf Arbeitgeber-Website bewerben")',
+                 'a:has-text("Zum Stellenangebot")',
+                 '.apply-button',
+                 '#apply_button'
             ]
             for selector in adzuna_apply_selectors:
-                if await page.locator(selector).count() > 0:
+                locator = page.locator(selector).first
+                if await locator.count() > 0:
                     print(f"✅ [UNIVERSAL-PILOT] Clicking Adzuna redirect: {selector}")
                     async with page.expect_navigation(wait_until="networkidle", timeout=15000):
-                        await page.click(selector)
+                        await locator.click()
                     break
         except Exception as e:
             print(f"⚠️ [UNIVERSAL-PILOT] Adzuna bypass failed: {e}")
@@ -122,7 +126,11 @@ async def autofill_universal_form(
         success_click = False
         
         # Priority 1: User specified or common text-based buttons (Multi-language)
-        text_buttons = ["Apply", "Submit", "Send Application", "Bewerben", "Absenden", "Postuler"]
+        text_buttons = [
+            "Apply", "Submit", "Send Application", 
+            "Bewerben", "Absenden", "Einreichen", "Bewerbung absenden", "Senden",
+            "Postuler", "Envoyer"
+        ]
         for btn_text in text_buttons:
             try:
                 btn = page.get_by_role("button", name=btn_text, exact=False)
@@ -174,10 +182,10 @@ async def _execute_heuristic_scan(page: Page) -> Dict:
     Used when Firecrawl is unavailable.
     """
     fields = {
-        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], #name, #full_name',
-        "email_field": 'input[type="email"], input[name*="email"], #email',
+        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], input[placeholder*="Vorname"], input[placeholder*="Nachname"], #name, #full_name',
+        "email_field": 'input[type="email"], input[name*="email"], input[name*="mail"], #email',
         "resume_upload_selector": 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv',
-        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit")',
+        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit"), button:has-text("Bewerbung absenden")',
         "additional_fields": []
     }
     return fields

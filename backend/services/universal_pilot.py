@@ -7,6 +7,47 @@ from services.universal_scraper import scrape_job_form
 
 LOGS_DIR = os.path.join(os.getcwd(), ".tmp", "logs", "applications")
 
+async def navigate_to_final_application_page(page: Page):
+    """
+    Handles the 'hallway' screens like Adzuna's email registration 
+    and 'No thank you' prompts before the real form.
+    """
+    # 1. Handle "Register your email" pop-ups / screens
+    skip_selectors = [
+        'button:has-text("No thank you")', 
+        'button:has-text("Continue without job email")',
+        'button:has-text("Nein danke")', # German Support
+        '#skip-email-reg',
+        '.close-modal',
+        'button[aria-label="Close"]'
+    ]
+    
+    for selector in skip_selectors:
+        try:
+            if await page.is_visible(selector, timeout=2000):
+                await page.click(selector)
+                print(f"✅ Bypassed prompt using: {selector}")
+        except:
+            continue
+
+    # 2. Find and click the FINAL 'Apply' button
+    apply_selectors = [
+        'button:has-text("Apply")',
+        'a:has-text("Apply on company site")',
+        'button:has-text("Bewerben")', # German Support
+        '.btn-apply-now'
+    ]
+    
+    for selector in apply_selectors:
+        try:
+            if await page.is_visible(selector, timeout=3000):
+                await page.click(selector)
+                await page.wait_for_load_state("networkidle")
+                return True
+        except:
+            continue
+    return False
+
 async def autofill_universal_form(
     page: Page, 
     job_id: str, 
@@ -19,6 +60,9 @@ async def autofill_universal_form(
     Fills a generic web form using Firecrawl extraction data.
     """
     print(f"🚀 [UNIVERSAL-PILOT] Starting Direct Apply for: {job_details.get('title')}")
+    
+    # 0. Navigate 'Hallways' (Adzuna register popups, etc.)
+    await navigate_to_final_application_page(page)
     
     # 1. Scrape with Firecrawl
     job_url = job_details.get('job_url', '')

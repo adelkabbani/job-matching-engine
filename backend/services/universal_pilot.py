@@ -35,6 +35,8 @@ async def navigate_to_final_application_page(page: Page):
         'button:has-text("Apply")',
         'a:has-text("Apply on company site")',
         'button:has-text("Bewerben")', # German Support
+        'a:has-text("Original-Anzeige")',
+        'a:has-text("Auf Arbeitgeber-Website bewerben")',
         '.btn-apply-now'
     ]
     
@@ -157,6 +159,7 @@ async def autofill_universal_form(
             'button:has-text("Apply")',
             'button:has-text("Submit")',
             'button:has-text("Send Application")',
+            'button:has-text("Bewerbung absenden")',
             '.submit-button',
             '#submit_button',
             fields.get('submit_button')
@@ -226,8 +229,8 @@ async def _execute_heuristic_scan(page: Page) -> Dict:
     Used when Firecrawl is unavailable.
     """
     fields = {
-        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], input[placeholder*="Vorname"], input[placeholder*="Nachname"], #name, #full_name',
-        "email_field": 'input[type="email"], input[name*="email"], input[name*="mail"], #email',
+        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], input[placeholder*="Vorname"], input[placeholder*="Nachname"], input[aria-label*="Name"], #name, #full_name',
+        "email_field": 'input[type="email"], input[name*="email"], input[name*="mail"], input[title*="Email"], #email',
         "resume_upload_selector": 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv',
         "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit"), button:has-text("Bewerbung absenden")',
         "additional_fields": []

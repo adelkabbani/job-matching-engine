@@ -33,26 +33,10 @@ def tailor_cv(job_description: str, cv_data: Dict, cert_skills: List[str]) -> Di
 
     # 2. Tailor Skills Section
     # Combine CV skills and certificate skills
-    def normalize_skill_list(sl):
-        if not isinstance(sl, (list, tuple, set)):
-            return [str(sl)] if sl else []
-        normalized = []
-        for s in sl:
-            if isinstance(s, dict):
-                # Handle cases like {"name": "Python", "level": 3}
-                val = s.get('name') or s.get('skill') or next(iter(s.values())) if s else "Unknown"
-                normalized.append(str(val))
-            elif isinstance(s, (list, tuple)):
-                normalized.extend(normalize_skill_list(s))
-            else:
-                normalized.append(str(s))
-        return [s.strip() for s in normalized if s]
-
-    user_cv_skills = normalize_skill_list(cv_data.get('skills', []))
-    user_cert_skills = normalize_skill_list(cert_skills)
-    
-    # Force every skill to be a simple string before making a set
-    all_user_skills = set(str(s) for s in user_cv_skills) | set(str(s) for s in user_cert_skills)
+    # Ensure skills are strings before set()
+    user_cv_skills = [s.get('name', str(s)) if isinstance(s, dict) else str(s) for s in (cv_data.get('skills', []) or [])]
+    user_cert_skills = [s.get('name', str(s)) if isinstance(s, dict) else str(s) for s in cert_skills]
+    all_user_skills = set(user_cv_skills) | set(user_cert_skills)
     
     # Identify skills that match JD keywords
     matched_skills = [s for s in all_user_skills if s.lower() in [k.lower() for k in jd_keywords]]

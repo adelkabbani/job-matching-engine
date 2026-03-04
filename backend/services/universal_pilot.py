@@ -21,8 +21,31 @@ async def autofill_universal_form(
     print(f"🚀 [UNIVERSAL-PILOT] Starting Direct Apply for: {job_details.get('title')}")
     
     # 1. Scrape with Firecrawl
-    job_url = job_details.get('job_url')
-    scrape_res = scrape_job_form(job_url)
+    job_url = job_details.get('job_url', '')
+    
+    # --- Adzuna Bypass Logic ---
+    if "adzuna" in job_url.lower():
+        print("🕵️ [UNIVERSAL-PILOT] Adzuna landing page detected. Navigating to company site...")
+        try:
+            await page.goto(job_url, wait_until="networkidle")
+            # Try common Adzuna "Apply" buttons
+            adzuna_apply_selectors = [
+                'a:has-text("Apply on company site")',
+                'a:has-text("View job")',
+                '.apply-button',
+                '#apply_button'
+            ]
+            for selector in adzuna_apply_selectors:
+                if await page.locator(selector).count() > 0:
+                    print(f"✅ [UNIVERSAL-PILOT] Clicking Adzuna redirect: {selector}")
+                    async with page.expect_navigation(wait_until="networkidle", timeout=15000):
+                        await page.click(selector)
+                    break
+        except Exception as e:
+            print(f"⚠️ [UNIVERSAL-PILOT] Adzuna bypass failed: {e}")
+    # ---------------------------
+
+    scrape_res = scrape_job_form(page.url if "adzuna" in job_url.lower() else job_url)
     
     fields = {}
     if scrape_res["status"] == "FALLBACK_REQUIRED":
@@ -97,16 +120,32 @@ async def autofill_universal_form(
         print(f"🖱️ [UNIVERSAL-PILOT] Searching for submit button using: {submit_selectors}")
         
         success_click = False
-        for selector in submit_selectors:
+        
+        # Priority 1: User specified or common text-based buttons (Multi-language)
+        text_buttons = ["Apply", "Submit", "Send Application", "Bewerben", "Absenden", "Postuler"]
+        for btn_text in text_buttons:
             try:
-                # Short timeout for each attempt
-                await page.wait_for_selector(selector, timeout=3000)
-                print(f"✅ [UNIVERSAL-PILOT] Found and clicking: {selector}")
-                await page.click(selector)
-                success_click = True
-                break
+                btn = page.get_by_role("button", name=btn_text, exact=False)
+                if await btn.count() > 0:
+                    print(f"✅ [UNIVERSAL-PILOT] Found and clicking role-based button: {btn_text}")
+                    await btn.click(timeout=3000)
+                    success_click = True
+                    break
             except Exception:
                 continue
+
+        if not success_click:
+            # Priority 2: CSS Selector Fallback
+            for selector in submit_selectors:
+                try:
+                    # Short timeout for each attempt
+                    await page.wait_for_selector(selector, timeout=3000)
+                    print(f"✅ [UNIVERSAL-PILOT] Found and clicking: {selector}")
+                    await page.click(selector)
+                    success_click = True
+                    break
+                except Exception:
+                    continue
                 
         if not success_click:
             return {"status": "error", "message": "Could not find a valid submit button after multiple attempts."}

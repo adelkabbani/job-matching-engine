@@ -36,10 +36,10 @@ def migrate():
     print("\n[MASTER KEY] Run this SQL in your Supabase Editor to unlock the Universal Pivot:")
     print("-" * 50)
     print("""
--- UNLOCK ALL LABELS: scraped, shortlisted, applying, applied, failed, rejected
+-- UNLOCK ALL LABELS: scraped, shortlisted, applying, applied, failed
 ALTER TABLE public.jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
 ALTER TABLE public.jobs ADD CONSTRAINT jobs_status_check 
-CHECK (status IN ('scraped', 'shortlisted', 'applying', 'applied', 'failed', 'rejected'));
+CHECK (status IN ('scraped', 'shortlisted', 'applying', 'applied', 'failed'));
 
 COMMENT ON TABLE public.jobs IS 'Universal Pivot: Pipeline unlocked for all application stages';
     """)

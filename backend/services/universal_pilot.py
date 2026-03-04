@@ -76,13 +76,13 @@ async def autofill_universal_form(
             
         # 7. Submit with multi-selector fallback
         submit_selectors = [
-            fields.get('submit_button'),
-            '#submit_button',
-            '.submit-button',
-            '[type="submit"]',
+            'button[type="submit"]',
             'button:has-text("Apply")',
             'button:has-text("Submit")',
-            'button:has-text("Send Application")'
+            'button:has-text("Send Application")',
+            '.submit-button',
+            '#submit_button',
+            fields.get('submit_button')
         ]
         
         # Filter None and duplicates

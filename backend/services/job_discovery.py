@@ -47,9 +47,10 @@ def search_apify_indeed(query: str, location: str = "Berlin") -> List[Dict]:
         print("⚠️ APIFY_TOKEN not found in .env. Skipping Apify Indeed search.")
         return []
 
-    actor_id = "misceres/indeed-scraper"
-    # run-sync-get-dataset-items runs the actor and returns the results once finished
-    url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?token={APIFY_TOKEN}"
+    actor_id = "apify/indeed-scraper"
+    # Note: Apify API requires '~' instead of '/' in URLs
+    actor_path = actor_id.replace("/", "~")
+    url = f"https://api.apify.com/v2/acts/{actor_path}/run-sync-get-dataset-items?token={APIFY_TOKEN}"
     
     payload = {
         "position": query,

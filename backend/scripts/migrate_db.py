@@ -37,11 +37,8 @@ def migrate():
     print("-" * 50)
     print("""
 -- UNLOCK ALL LABELS: scraped, shortlisted, applying, applied, failed, rejected
-ALTER TABLE public.jobs 
-DROP CONSTRAINT IF EXISTS jobs_status_check;
-
-ALTER TABLE public.jobs 
-ADD CONSTRAINT jobs_status_check 
+ALTER TABLE public.jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
+ALTER TABLE public.jobs ADD CONSTRAINT jobs_status_check 
 CHECK (status IN ('scraped', 'shortlisted', 'applying', 'applied', 'failed', 'rejected'));
 
 COMMENT ON TABLE public.jobs IS 'Universal Pivot: Pipeline unlocked for all application stages';

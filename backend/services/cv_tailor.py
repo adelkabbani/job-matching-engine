@@ -46,14 +46,15 @@ def tailor_cv(job_description: str, cv_data: Dict, cert_skills: List[str]) -> Di
     user_cv_skills = normalize_skill_list(cv_data.get('skills', []))
     user_cert_skills = normalize_skill_list(cert_skills)
     
-    all_user_skills = set(user_cv_skills) | set(user_cert_skills)
+    # Force every skill to be a simple string before making a set
+    all_user_skills = set(str(s) for s in user_cv_skills) | set(str(s) for s in user_cert_skills)
     
     # Identify skills that match JD keywords
     matched_skills = [s for s in all_user_skills if s.lower() in [k.lower() for k in jd_keywords]]
     other_skills = [s for s in all_user_skills if s not in matched_skills]
     
     # Prioritize matched skills
-    tailored_skills = matched_skills + other_skills
+    tailored_skills = list(matched_skills) + list(other_skills)
 
     return {
         **cv_data,

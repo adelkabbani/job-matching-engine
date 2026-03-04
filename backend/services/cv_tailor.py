@@ -34,14 +34,19 @@ def tailor_cv(job_description: str, cv_data: Dict, cert_skills: List[str]) -> Di
     # 2. Tailor Skills Section
     # Combine CV skills and certificate skills
     def normalize_skill_list(sl):
+        if not isinstance(sl, (list, tuple, set)):
+            return [str(sl)] if sl else []
         normalized = []
         for s in sl:
             if isinstance(s, dict):
                 # Handle cases like {"name": "Python", "level": 3}
-                normalized.append(str(s.get('name', str(s))))
+                val = s.get('name') or s.get('skill') or next(iter(s.values())) if s else "Unknown"
+                normalized.append(str(val))
+            elif isinstance(s, (list, tuple)):
+                normalized.extend(normalize_skill_list(s))
             else:
                 normalized.append(str(s))
-        return normalized
+        return [s.strip() for s in normalized if s]
 
     user_cv_skills = normalize_skill_list(cv_data.get('skills', []))
     user_cert_skills = normalize_skill_list(cert_skills)

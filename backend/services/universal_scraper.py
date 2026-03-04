@@ -84,6 +84,9 @@ def scrape_job_form(url: str) -> Dict:
             else:
                 print(f"⚠️ [FIRECRAWL] Extraction returned no fields for {url}")
                 return {"status": "error", "message": "Extraction failed or returned no fields."}
+        elif response.status_code == 402:
+            print(f"⚠️ [FIRECRAWL] Credits exhausted (402). Falling back to heuristic scan.")
+            return {"status": "FALLBACK_REQUIRED", "message": "Firecrawl credits exhausted."}
         else:
             print(f"❌ [FIRECRAWL] API returned status {response.status_code}: {response.text}")
             return {"status": "error", "message": f"Firecrawl API error: {response.status_code}"}

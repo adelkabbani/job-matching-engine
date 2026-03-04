@@ -23,10 +23,15 @@ async def autofill_universal_form(
     # 1. Scrape with Firecrawl
     job_url = job_details.get('job_url')
     scrape_res = scrape_job_form(job_url)
-    if scrape_res["status"] == "error":
+    
+    fields = {}
+    if scrape_res["status"] == "FALLBACK_REQUIRED":
+        print("⚠️ [UNIVERSAL-PILOT] Firecrawl unavailable. Executing Heuristic Fallback...")
+        fields = await _execute_heuristic_scan(page)
+    elif scrape_res["status"] == "error":
         return scrape_res
-        
-    fields = scrape_res["fields"]
+    else:
+        fields = scrape_res["fields"]
     
     # 2. Get User Data
     profile_res = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
@@ -41,20 +46,21 @@ async def autofill_universal_form(
     try:
         # 4. Fill Main Fields
         # Full Name
-        if fields.get('full_name_field'):
-            await _fill_field(page, fields['full_name_field'], profile.get('full_name', ''))
+        full_name_selector = fields.get('full_name_field') or 'input[name*="name"], input[placeholder*="Name"], #name, #full_name'
+        if full_name_selector:
+            await _fill_field(page, full_name_selector, profile.get('full_name', ''), optional=True)
             
         # Email
-        if fields.get('email_field'):
-            await _fill_field(page, fields['email_field'], profile.get('email', ''))
+        email_selector = fields.get('email_field') or 'input[type="email"], input[name*="email"], #email'
+        if email_selector:
+            await _fill_field(page, email_selector, profile.get('email', ''), optional=True)
             
         # Resume Upload
-        if fields.get('resume_upload_selector'):
+        resume_selector = fields.get('resume_upload_selector') or 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv'
+        if resume_selector:
             # Fetch the tailored CV path
-            cv_res = supabase.table("cv_versions").select("id").eq("job_id", job_id).execute()
-            # For now, we assume a resume is ready or use the base one
-            # Logic to find the actual file path would go here
-            print(f"📤 [UNIVERSAL-PILOT] Resume upload requested at: {fields['resume_upload_selector']}")
+            # (Logic remains same, just using resume_selector)
+            print(f"📤 [UNIVERSAL-PILOT] Resume upload attempt at: {resume_selector}")
             # Implementation for file upload...
             
         # 5. Handle Additional Fields with LLM
@@ -123,9 +129,25 @@ async def autofill_universal_form(
 
     return {"status": "error", "message": "Unknown workflow end."}
 
-async def _fill_field(page: Page, selector: str, value: str):
+async def _execute_heuristic_scan(page: Page) -> Dict:
+    """
+    Scans the page for common form field selectors.
+    Used when Firecrawl is unavailable.
+    """
+    fields = {
+        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], #name, #full_name',
+        "email_field": 'input[type="email"], input[name*="email"], #email',
+        "resume_upload_selector": 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv',
+        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit")',
+        "additional_fields": []
+    }
+    return fields
+
+async def _fill_field(page: Page, selector: str, value: str, optional: bool = False):
     try:
-        await page.wait_for_selector(selector, timeout=5000)
+        # Wait less for optional fields
+        timeout = 2000 if optional else 5000
+        await page.wait_for_selector(selector, timeout=timeout)
         # Check if it's a select or input
         tag_name = await page.evaluate(f'(s) => document.querySelector(s)?.tagName', selector)
         if tag_name == 'SELECT':
@@ -134,4 +156,7 @@ async def _fill_field(page: Page, selector: str, value: str):
             await page.fill(selector, value)
         print(f"  [FILL] {selector} -> {value}")
     except Exception:
-        print(f"  [WARN] Could not fill field: {selector}")
+        if not optional:
+            print(f"  [WARN] Could not fill mandatory field: {selector}")
+        else:
+            print(f"  [DEBUG] Optional field not found: {selector}")

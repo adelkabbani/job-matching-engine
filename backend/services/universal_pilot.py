@@ -74,21 +74,48 @@ async def autofill_universal_form(
         if dry_run:
             return {"status": "success", "message": "Dry Run: Universal form filled successfully."}
             
-        # 7. Submit
-        if fields.get('submit_button'):
-            print(f"🖱️ [UNIVERSAL-PILOT] Clicking Submit: {fields['submit_button']}")
-            await page.click(fields['submit_button'])
-            await asyncio.sleep(5)
+        # 7. Submit with multi-selector fallback
+        submit_selectors = [
+            fields.get('submit_button'),
+            '#submit_button',
+            '.submit-button',
+            '[type="submit"]',
+            'button:has-text("Apply")',
+            'button:has-text("Submit")',
+            'button:has-text("Send Application")'
+        ]
+        
+        # Filter None and duplicates
+        submit_selectors = list(dict.fromkeys([s for s in submit_selectors if s]))
+        
+        print(f"🖱️ [UNIVERSAL-PILOT] Searching for submit button using: {submit_selectors}")
+        
+        success_click = False
+        for selector in submit_selectors:
+            try:
+                # Short timeout for each attempt
+                await page.wait_for_selector(selector, timeout=3000)
+                print(f"✅ [UNIVERSAL-PILOT] Found and clicking: {selector}")
+                await page.click(selector)
+                success_click = True
+                break
+            except Exception:
+                continue
+                
+        if not success_click:
+            return {"status": "error", "message": "Could not find a valid submit button after multiple attempts."}
+
+        await asyncio.sleep(5)
             
-            # Verify and save proof
-            success_path = os.path.join(job_log_dir, "success_proof.png")
-            await page.screenshot(path=success_path)
-            
-            return {
-                "status": "success", 
-                "message": "Direct Apply submitted successfully.",
-                "screenshot": success_path
-            }
+        # Verify and save proof
+        success_path = os.path.join(job_log_dir, "success_proof.png")
+        await page.screenshot(path=success_path)
+        
+        return {
+            "status": "success", 
+            "message": "Direct Apply submitted successfully.",
+            "screenshot": success_path
+        }
             
     except Exception as e:
         print(f"❌ [UNIVERSAL-PILOT] Error: {e}")

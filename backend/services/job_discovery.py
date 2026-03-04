@@ -160,7 +160,7 @@ def background_tailor_task(job_id: str, user_id: str, supabase):
         if profile_res.data and profile_res.data.get("openrouter_key"):
             from utils.encryption import decrypt_value
             api_key = decrypt_value(profile_res.data["openrouter_key"]).strip().replace('"', '').replace("'", "")
-            content = generate_cover_letter(job.data['description'], tailored, api_key, "professional")
+            content = generate_cover_letter(job_data['description'], tailored, api_key, "professional")
             
             cl_record = {
                 "user_id": user_id,

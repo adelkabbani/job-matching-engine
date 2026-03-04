@@ -21,12 +21,42 @@ if sys.platform == 'win32':
 from datetime import datetime
 from services.linkedin_assistant import launch_linkedin_browser, stop_linkedin_browser, capture_current_search_results
 
-# Load environment variables
-load_dotenv(override=True)
+# Robust .env loading
+env_paths = [
+    Path(__file__).parent / ".env",          # backend/.env
+    Path(__file__).parent.parent / ".env",   # root/.env
+    Path.cwd() / ".env"                      # current directory/.env
+]
+for p in env_paths:
+    if p.exists():
+        load_dotenv(dotenv_path=p, override=True)
+        print(f"✅ Main: Loaded environment from: {p.absolute()}")
+        break
 
 # Supabase client
 url: str = os.environ.get("SUPABASE_URL", "").strip().replace('"', '').replace("'", "")
 key: str = (os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY") or "").strip().replace('"', '').replace("'", "")
+
+def db_retry(max_retries=3, delay=2):
+    """Decorator to retry Supabase queries on connection failures."""
+    import time
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_err = e
+                    if "Server disconnected" in str(e) or "Connection" in str(e):
+                        print(f"⚠️ [DB RETRY] Query failed (Attempt {attempt+1}/{max_retries}): {e}. Retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    raise e
+            print(f"❌ [DB ERROR] Final failure: {last_err}")
+            raise last_err
+        return wrapper
+    return decorator
 
 if not url or not key:
     print("⚠️  WARNING: Supabase credentials not found in .env file")
@@ -669,25 +699,34 @@ async def get_my_cv(user: dict = Depends(get_current_user)):
     Get the latest CV for the current user and its extracted data.
     """
     try:
-        # 1. Get latest CV document
-        doc_res = supabase.table("documents")\
-            .select("id, original_filename, content_text, created_at, storage_path")\
-            .eq("user_id", user.id)\
-            .eq("doc_type", "cv")\
-            .order("created_at", desc=True)\
-            .limit(1)\
-            .execute()
+        @db_retry(max_retries=3)
+        def fetch_cv_data():
+            # 1. Get latest CV document
+            docs = supabase.table("documents")\
+                .select("id, original_filename, content_text, created_at, storage_path")\
+                .eq("user_id", user.id)\
+                .eq("doc_type", "cv")\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
+                
+            if not docs.data:
+                return None, None
             
-        if not doc_res.data:
+            doc = docs.data[0]
+            
+            # 2. Get structured data if exists
+            struct = supabase.table("cv_structured_data")\
+                .select("parsed_data, updated_at")\
+                .eq("document_id", doc["id"])\
+                .execute()
+            
+            return doc, struct
+
+        doc, struct_res = fetch_cv_data()
+        
+        if not doc:
             return {"found": False}
-        
-        doc = doc_res.data[0]
-        
-        # 2. Get structured data if exists
-        struct_res = supabase.table("cv_structured_data")\
-            .select("parsed_data, updated_at")\
-            .eq("document_id", doc["id"])\
-            .execute()
             
         parsed_data = struct_res.data[0]["parsed_data"] if struct_res.data else None
         
@@ -792,20 +831,26 @@ async def get_certificate_insights(user: dict = Depends(get_current_user)):
     Returns analysis-first view data with processing status for each certificate.
     """
     try:
-        # Get all certificate documents with status
-        docs_res = supabase.table("documents")\
-            .select("id, analysis_status, analysis_error, analyzed_at")\
-            .eq("user_id", user.id)\
-            .eq("doc_type", "certificate")\
-            .order("created_at", desc=True)\
-            .execute()
-        
-        # Get all certificate structured data
-        certs_res = supabase.table("certificate_structured_data")\
-            .select("document_id, parsed_data, created_at")\
-            .eq("user_id", user.id)\
-            .order("created_at", desc=True)\
-            .execute()
+        @db_retry(max_retries=3)
+        def fetch_data():
+            # Get all certificate documents with status
+            docs = supabase.table("documents")\
+                .select("id, analysis_status, analysis_error, analyzed_at")\
+                .eq("user_id", user.id)\
+                .eq("doc_type", "certificate")\
+                .order("created_at", desc=True)\
+                .execute()
+            
+            # Get all certificate structured data
+            certs = supabase.table("certificate_structured_data")\
+                .select("document_id, parsed_data, created_at")\
+                .eq("user_id", user.id)\
+                .order("created_at", desc=True)\
+                .execute()
+                
+            return docs, certs
+
+        docs_res, certs_res = fetch_data()
         
         if not docs_res.data:
             return {"certificates": [], "unique_skills": [], "total_count": 0}
@@ -1255,7 +1300,7 @@ async def batch_apply_jobs(
     user: dict = Depends(get_current_user)
 ):
     """
-    Auto-Pilot Trigger: Fetch all ≥90% matches and apply automatically.
+    Auto-Pilot Trigger: Fetch all ≥50% matches and apply automatically.
     """
     try:
         jobs_res = supabase.table("jobs")\
@@ -1287,21 +1332,24 @@ async def batch_apply_jobs(
             job_id = job['id']
             job_url = job.get('job_url') or ""
             
-            # PHASE 3: Strict LinkedIn Filtering
-            if "linkedin.com/jobs/view/" not in job_url:
-                print(f"⏭️ [AUTO-PILOT] Skipping {job.get('title')}: Non-LinkedIn Platform.")
-                # Mark as failed in DB with clear reason
-                supabase.table("jobs").update({
-                    "status": "failed",
-                    "filter_reason": "Non-LinkedIn Platform"
-                }).eq("id", job_id).execute()
+            # [UNIVERSAL UPDATE] Removed LinkedIn-only domain filtering
+            # if "linkedin.com/jobs/view/" not in job_url:
+            #     print(f"⏭️ [AUTO-PILOT] Skipping {job.get('title')}: Non-LinkedIn Platform.")
+            #     # Mark as failed in DB with clear reason
+            #     supabase.table("jobs").update({
+            #         "status": "failed",
+            #         "filter_reason": "Non-LinkedIn Platform"
+            #     }).eq("id", job_id).execute()
+            #     
+            #     results.append({"job_id": job_id, "status": "failed", "message": "Source not supported (LinkedIn only)."})
+            #     skipped_count += 1
+            #     continue
                 
-                results.append({"job_id": job_id, "status": "failed", "message": "Source not supported (LinkedIn only)."})
-                skipped_count += 1
-                continue
-                
-            if not job.get('is_easy_apply'):
-                print(f"⏭️ [AUTO-PILOT] Skipping {job.get('title')}: Not marked as Easy Apply.")
+            # Pilot Routing Logic
+            is_linkedin = "linkedin.com" in job_url
+            
+            if is_linkedin and not job.get('is_easy_apply'):
+                print(f"⏭️ [AUTO-PILOT] Skipping {job.get('title')}: Not a LinkedIn Easy Apply role.")
                 results.append({"job_id": job_id, "status": "skipped", "message": "Skipped: Not an Easy Apply role."})
                 skipped_count += 1
                 continue
@@ -1309,8 +1357,21 @@ async def batch_apply_jobs(
             print(f"🤖 [AUTO-PILOT] Applying to: {job.get('title')} @ {job.get('company')}")
             
             try:
-                # PHASE 19/20: Pass dry_run
-                res = await autofill_easy_apply_modal(job_id=job_id, user_id=user.id, supabase=supabase, dry_run=dry_run)
+                if is_linkedin:
+                    # Original LinkedIn Pilot
+                    res = await autofill_easy_apply_modal(job_id=job_id, user_id=user.id, supabase=supabase, dry_run=dry_run)
+                else:
+                    # Universal Pilot for Company Career Pages
+                    from services.universal_pilot import autofill_universal_form
+                    from services.linkedin_assistant import _browser_context, launch_linkedin_browser
+                    
+                    if not _browser_context:
+                        await launch_linkedin_browser()
+                    
+                    page = await _browser_context.new_page()
+                    res = await autofill_universal_form(page, job_id, user.id, supabase, job, dry_run=dry_run)
+                    await page.close()
+
                 results.append({"job_id": job_id, "status": res.get("status"), "message": res.get("message")})
                 
                 if res.get("status") == "success":

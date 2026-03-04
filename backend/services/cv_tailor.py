@@ -33,7 +33,20 @@ def tailor_cv(job_description: str, cv_data: Dict, cert_skills: List[str]) -> Di
 
     # 2. Tailor Skills Section
     # Combine CV skills and certificate skills
-    all_user_skills = set(cv_data.get('skills', [])) | set(cert_skills)
+    def normalize_skill_list(sl):
+        normalized = []
+        for s in sl:
+            if isinstance(s, dict):
+                # Handle cases like {"name": "Python", "level": 3}
+                normalized.append(str(s.get('name', str(s))))
+            else:
+                normalized.append(str(s))
+        return normalized
+
+    user_cv_skills = normalize_skill_list(cv_data.get('skills', []))
+    user_cert_skills = normalize_skill_list(cert_skills)
+    
+    all_user_skills = set(user_cv_skills) | set(user_cert_skills)
     
     # Identify skills that match JD keywords
     matched_skills = [s for s in all_user_skills if s.lower() in [k.lower() for k in jd_keywords]]

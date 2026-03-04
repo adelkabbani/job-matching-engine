@@ -33,10 +33,10 @@ def migrate():
     except Exception as e:
         print(f"❌ Query Error: {e}")
 
-    print("\n[INSTRUCTION] Run this 'Master Key' SQL in Supabase SQL Editor to UNLOCK all labels:")
+    print("\n[MASTER KEY] Run this SQL in your Supabase Editor to unlock the Universal Pivot:")
     print("-" * 50)
     print("""
--- This script completely resets the allowed statuses to include Auto-Pilot requirements
+-- UNLOCK ALL LABELS: scraped, shortlisted, applying, applied, failed, rejected
 ALTER TABLE public.jobs 
 DROP CONSTRAINT IF EXISTS jobs_status_check;
 
@@ -44,8 +44,7 @@ ALTER TABLE public.jobs
 ADD CONSTRAINT jobs_status_check 
 CHECK (status IN ('scraped', 'shortlisted', 'applying', 'applied', 'failed', 'rejected'));
 
--- Verify the change
-COMMENT ON TABLE public.jobs IS 'Status list updated to include applying and applied';
+COMMENT ON TABLE public.jobs IS 'Universal Pivot: Pipeline unlocked for all application stages';
     """)
     print("-" * 50)
 

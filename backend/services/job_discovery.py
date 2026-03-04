@@ -6,9 +6,17 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Absolute path loading
-env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(dotenv_path=env_path, override=True) # Override=True is critical!
+# Robust .env loading
+env_paths = [
+    Path(__file__).parent.parent / ".env",          # backend/.env
+    Path(__file__).parent.parent.parent / ".env",   # root/.env
+    Path.cwd() / ".env"                            # current directory/.env
+]
+for p in env_paths:
+    if p.exists():
+        load_dotenv(dotenv_path=p, override=True)
+        print(f"✅ Loaded environment from: {p.absolute()}")
+        break
 
 ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "").strip().replace('"', '').replace("'", "")
 ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "").strip().replace('"', '').replace("'", "")
@@ -28,6 +36,61 @@ from services.llm import generate_cover_letter
 
 # Constants
 ADZUNA_BASE_URL = "https://api.adzuna.com/v1/api/jobs/de/search"  # Focus on Germany
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "").strip().replace('"', '').replace("'", "")
+
+def search_apify_indeed(query: str, location: str = "Berlin") -> List[Dict]:
+    """
+    Search jobs using Apify Indeed Scraper actor.
+    Provides high-quality direct company links.
+    """
+    if not APIFY_TOKEN:
+        print("⚠️ APIFY_TOKEN not found in .env. Skipping Apify Indeed search.")
+        return []
+
+    actor_id = "misceres/indeed-scraper"
+    # run-sync-get-dataset-items runs the actor and returns the results once finished
+    url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items?token={APIFY_TOKEN}"
+    
+    payload = {
+        "position": query,
+        "location": location,
+        "maxItems": 15,
+        "parseCompanyDetails": True,
+        "saveHtml": False
+    }
+    
+    try:
+        print(f"🕵️ [APIFY] Triggering Indeed Scraper for '{query}' in {location}...")
+        # Note: Actors can take a minute, so we use a long timeout
+        response = requests.post(url, json=payload, timeout=180) 
+        if response.status_code in [200, 201]:
+            data = response.json()
+            jobs = []
+            for item in data:
+                # Map Apify Indeed schema to our internal schema
+                # Indeed Scraper gives 'externalApplyLink' for direct company sites
+                job_url = item.get('externalApplyLink') or item.get('url')
+                
+                job = {
+                    'title': item.get('positionName'),
+                    'company': item.get('company'),
+                    'description': item.get('description'),
+                    'url': job_url,
+                    'location': item.get('location'),
+                    'remote_ok': 'remote' in (item.get('description') or '').lower() or item.get('isRemote', False),
+                    'language': 'english', 
+                    'experience_level': 'mid',
+                    'source': 'indeed_apify'
+                }
+                if job['title'] and job['url']:
+                    jobs.append(job)
+            print(f"✅ [APIFY] Found {len(jobs)} high-quality Indeed jobs.")
+            return jobs
+        else:
+            print(f"⚠️ Apify API returned status {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"❌ Apify Indeed search failed: {e}")
+    return []
 
 def background_tailor_task(job_id: str, user_id: str, supabase):
     """
@@ -35,22 +98,50 @@ def background_tailor_task(job_id: str, user_id: str, supabase):
     """
     try:
         print(f"🧵 [BG] Starting immediate tailoring for job {job_id}...")
+    
+        def fetch_with_retry(table, select_cols, eq_col, eq_val, single=True):
+            import time
+            for attempt in range(4):
+                try:
+                    query = supabase.table(table).select(select_cols).eq(eq_col, eq_val)
+                    if single:
+                        return query.single().execute()
+                    return query.execute()
+                except Exception as e:
+                    if "Server disconnected" in str(e) and attempt < 3:
+                        time.sleep(2)
+                        continue
+                    raise e
+
         # 1. Get JD and User Info
-        job = supabase.table("jobs").select("*").eq("id", job_id).single().execute()
-        if not job.data: return
+        job_res = fetch_with_retry("jobs", "*", "id", job_id)
+        if not job_res.data: return
+        job_data = job_res.data
         
         from services.job_matcher import get_user_skills
         user_skills = get_user_skills(supabase, user_id)
         
         # Get latest CV structured data
-        cv_res = supabase.table("documents").select("id").eq("user_id", user_id).eq("doc_type", "cv").order("created_at", desc=True).limit(1).execute()
-        if not cv_res.data: return
-        
-        struct_res = supabase.table("cv_structured_data").select("parsed_data").eq("document_id", cv_res.data[0]["id"]).single().execute()
-        if not struct_res.data: return
+        def get_cv_data():
+            import time
+            for _ in range(3):
+                try:
+                    docs = supabase.table("documents").select("id").eq("user_id", user_id).eq("doc_type", "cv").order("created_at", desc=True).limit(1).execute()
+                    if not docs.data: return None
+                    struct = supabase.table("cv_structured_data").select("parsed_data").eq("document_id", docs.data[0]["id"]).single().execute()
+                    return struct
+                except Exception as e:
+                    if "Server disconnected" in str(e):
+                        time.sleep(2)
+                        continue
+                    raise e
+            return None
+
+        struct_res = get_cv_data()
+        if not struct_res or not struct_res.data: return
         
         # 2. Tailor CV
-        tailored = tailor_cv(job.data['description'], struct_res.data['parsed_data'], user_skills)
+        tailored = tailor_cv(job_data['description'], struct_res.data['parsed_data'], user_skills)
         
         # 3. Save CV Version
         record = {
@@ -249,9 +340,14 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
                 # Further compress multiple spaces
                 clean_kw = re.sub(r'\s+', ' ', clean_kw)
                      
-                print(f"DEBUG: Searching API natively for keyword: '{clean_kw}' in {loc} (Original LLM Keyword: '{kw}')")
+                print(f"DEBUG: Searching Adzuna for: '{clean_kw}' in {loc}")
                 found = search_jobs(clean_kw, loc)
                 all_found_jobs.extend(found)
+
+                # [UNIVERSAL] New high-quality Indeed source via Apify
+                print(f"🕵️ Searching Apify Indeed for: '{clean_kw}' in {loc}")
+                apify_found = search_apify_indeed(clean_kw, loc)
+                all_found_jobs.extend(apify_found)
             
         if not all_found_jobs:
             return {"status": "success", "count": 0, "message": "No jobs found or missing API keys"}

@@ -45,6 +45,21 @@ def _log_ai_decision(question: str, answer: str):
 # Sensitive fields that require human intervention
 SENSITIVE_KEYWORDS = ["salary", "compensation", "visa", "work authorization", "relocation", "notice period", "citizenship"]
 
+async def dismiss_cookie_banners(page: Page):
+    """Proactively dismiss common cookie banners."""
+    selectors = [
+        'button:has-text("Accept")', 
+        'button:has-text("Alle akzeptieren")', 
+        'button:has-text("Zustimmen")',
+        'button:has-text("Allow all")'
+    ]
+    for selector in selectors:
+        try:
+            if await page.is_visible(selector, timeout=2000):
+                print(f"🍪 [COOKIE-BUSTER] Dismissing banner: {selector}")
+                await page.click(selector)
+        except: pass
+
 async def launch_linkedin_browser():
     """
     Launch a visible browser window with a persistent profile.
@@ -402,6 +417,11 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         
     job = job_res.data
     profile = profile_res.data
+
+    # STRICT GUARD for job record validtiy
+    if not job or not job.get('id') and not job.get('job_id'):
+        print("⚠️ [ASSISTANT] Aborting: Job record is None or missing ID")
+        return {"status": "error", "message": "Job record invalid."}
     
     page = _browser_context.pages[0] if _browser_context.pages else await _browser_context.new_page()
     
@@ -438,6 +458,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
 
         # Apply stealth to the job page
         await Stealth().apply_stealth_async(page)
+        await dismiss_cookie_banners(page)
         
         # DEBUG: Initial Page Load
         await page.screenshot(path=os.path.join(job_log_dir, "0_page_load.png"), timeout=60000)
@@ -471,8 +492,11 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         print(f"🔍 Searching for Easy Apply button...")
         await page.screenshot(path=os.path.join(job_log_dir, "0.6_before_button_check.png"), timeout=60000)
         
-        # Enable Tracing
-        await _browser_context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        # Enable Tracing (GUARDED)
+        try:
+            await _browser_context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        except Exception as e:
+            print(f"⚠️ [ASSISTANT] Tracing start ignored: {e}")
         
         # Fallback selectors for Easy Apply button
         selectors = [

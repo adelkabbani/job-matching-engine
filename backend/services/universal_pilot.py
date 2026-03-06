@@ -6,6 +6,26 @@ from services.llm import autonomous_answer_resolver
 from services.universal_scraper import scrape_job_form
 
 LOGS_DIR = os.path.join(os.getcwd(), ".tmp", "logs", "applications")
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+async def dismiss_cookie_banners(page: Page):
+    """Proactively dismiss common cookie banners that might hide form elements."""
+    selectors = [
+        'button:has-text("Accept")', 
+        'button:has-text("Alle akzeptieren")', 
+        'button:has-text("Zustimmen")',
+        'button:has-text("Allow all")',
+        'button:has-text("OK")',
+        '#onetrust-accept-btn-handler',
+        '.cookie-banner__accept'
+    ]
+    for selector in selectors:
+        try:
+            if await page.is_visible(selector, timeout=2000):
+                print(f"🍪 [COOKIE-BUSTER] Dismissing banner: {selector}")
+                await page.click(selector)
+                await asyncio.sleep(1)
+        except: pass
 
 async def navigate_to_final_application_page(page: Page):
     """
@@ -56,11 +76,23 @@ async def navigate_to_final_application_page(page: Page):
                 # VISION DEBUG: Save proof before escape
                 await page.screenshot(path=os.path.join(LOGS_DIR, "hallway_escape_attempt.png"))
                 
-                async with page.expect_navigation(timeout=20000):
-                    await page.click(selector)
+                # ADZUNA TAB SENTINEL: Support new tab redirects
+                try:
+                    async with page.expect_popup(timeout=5000) as popup_info:
+                        await page.click(selector)
+                    new_page = await popup_info.value
+                    print("🚪 [TAB-SENTINEL] Detected new tab. Switching focus.")
+                    page = new_page # Switch context to the new tab
+                except asyncio.TimeoutError:
+                    print("⏭️ [TAB-SENTINEL] No new tab opened. Staying on current page.")
+                    async with page.expect_navigation(timeout=20000):
+                        await page.click(selector)
+                
+                # Proactively bust cookies on the new/target page
+                await dismiss_cookie_banners(page)
                 
                 # 3. STEP 3: URL SENTINEL - Wait for Adzuna Exit
-                print(f"🚀 [SKIP-SEQ] Redirect clicked. Monitoring URL Sentinel...")
+                print(f"🚀 [SKIP-SEQ] Monitoring URL Sentinel on: {page.url}")
                 max_wait = 30
                 for i in range(max_wait):
                     if "adzuna" not in page.url.lower():
@@ -155,19 +187,31 @@ async def autofill_universal_form(
                 import json
                 print(f"DEBUG_CV_JSON: {json.dumps(struct_res.data)}")
                 
-                raw_parsed_data = struct_res.data[0].get("parsed_data") or {}
+                # Correct path based on Run #6 logs:
+                cv_record = struct_res.data[0] if isinstance(struct_res.data, list) else struct_res.data
+                raw_parsed_data = cv_record.get("parsed_data") or {}
                 if isinstance(raw_parsed_data, str):
                     raw_parsed_data = json.loads(raw_parsed_data)
                 
-                parsed_personal_info = raw_parsed_data.get("personal_info", {})
-                email = parsed_personal_info.get('email')
+                # Use contact_info mapping as requested by user
+                contact = raw_parsed_data.get("contact_info", {})
+                email = contact.get("email")
+                full_name = contact.get("name")
+                phone = contact.get("phone")
                 
                 # STRICT ABORT: No placeholders allowed
                 if not email:
-                    print("❌ [BLACK-BOX] CRITICAL: Email missing in CV data. ABORTING.")
-                    return {"status": "error", "message": "Email missing from structured CV data. Please re-parse your CV."}
+                    print("❌ [BLACK-BOX] CRITICAL: Email missing in CV contact_info. ABORTING.")
+                    return {"status": "error", "message": "Email missing from contact_info in structured CV data."}
                 
-                print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {email}")
+                print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {email} ({full_name})")
+                
+                # Map back to parsed_personal_info for compatibility
+                parsed_personal_info = {
+                    "email": email,
+                    "name": full_name,
+                    "phone": phone
+                }
             else:
                 print(f"⚠️ [UNIVERSAL-PILOT] FAILED: No structured record for CV {cv_id}")
                 return {"status": "error", "message": "No structured CV data found. Please parse your CV first."}

@@ -33,10 +33,15 @@ def tailor_cv(job_description: str, cv_data: Dict, cert_skills: List[str]) -> Di
 
     # 2. Tailor Skills Section
     # Combine CV skills and certificate skills
-    # Ensure skills are strings before set()
-    user_cv_skills = [s.get('name', str(s)) if isinstance(s, dict) else str(s) for s in (cv_data.get('skills', []) or [])]
-    user_cert_skills = [s.get('name', str(s)) if isinstance(s, dict) else str(s) for s in cert_skills]
-    all_user_skills = set(str(s) for s in user_cv_skills) | set(str(s) for s in user_cert_skills)
+    # Ensure skills are strings before set() - EXTREME HARDENING
+    def safe_str(s):
+        if isinstance(s, dict):
+            return str(s.get('name', '')) or str(s)
+        return str(s)
+
+    user_cv_skills = [safe_str(s) for s in (cv_data.get('skills', []) or [])]
+    user_cert_skills = [safe_str(s) for s in cert_skills]
+    all_user_skills = set(user_cv_skills) | set(user_cert_skills)
     
     # Identify skills that match JD keywords
     matched_skills = [str(s) for s in all_user_skills if str(s).lower() in [k.lower() for k in jd_keywords]]

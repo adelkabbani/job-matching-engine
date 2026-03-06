@@ -42,6 +42,7 @@ async def navigate_to_final_application_page(page: Page):
         'button:has-text("No thank you")', 
         'button:has-text("Continue without job email")',
         'button:has-text("Nein danke")', 
+        'button:has-text("Ohne E-Mail-Dienst fortfahren")',
         'a:has-text("No thanks")',
         'button:has-text("Skip")',
         'button[aria-label="Close"]',
@@ -52,8 +53,8 @@ async def navigate_to_final_application_page(page: Page):
     for selector in skip_selectors:
         try:
             if await page.is_visible(selector, timeout=2000):
-                await page.click(selector)
                 print(f"✅ [SKIP-SEQ] Bypassed prompt using: {selector}")
+                await page.click(selector)
                 await asyncio.sleep(1)
         except: pass
 
@@ -77,15 +78,28 @@ async def navigate_to_final_application_page(page: Page):
                 # VISION DEBUG: Save proof before escape
                 await page.screenshot(path=os.path.join(LOGS_DIR, "hallway_escape_attempt.png"))
                 
-                # ADZUNA TAB SENTINEL: Support new tab redirects
+                # ADZUNA TAB STRATEGY: Switch to new tab and CLOSE original
                 try:
-                    async with page.expect_popup(timeout=5000) as popup_info:
+                    async with page.context.expect_popup(timeout=8000) as popup_info:
                         await page.click(selector)
                     new_page = await popup_info.value
-                    print("🚪 [TAB-SENTINEL] Detected new tab. Switching focus.")
-                    page = new_page # Switch context to the new tab
+                    print("🚪 [TAB-STRATEGY] Detected new tab. Switching focus and CLOSING parent.")
+                    
+                    # Mandatory wait for load state on the new page
+                    await new_page.wait_for_load_state("networkidle")
+                    
+                    # Store original page to close it
+                    parent_page = page
+                    page = new_page # Focus shifts to new tab
+                    
+                    try:
+                        await parent_page.close()
+                        print("🗑️ [TAB-STRATEGY] Parent Adzuna page closed.")
+                    except:
+                        print("⚠️ [TAB-STRATEGY] Failed to close parent page.")
+                        
                 except asyncio.TimeoutError:
-                    print("⏭️ [TAB-SENTINEL] No new tab opened. Staying on current page.")
+                    print("⏭️ [TAB-STRATEGY] No new tab opened. Staying on current page.")
                     async with page.expect_navigation(timeout=20000):
                         await page.click(selector)
                 
@@ -116,6 +130,56 @@ async def navigate_to_final_application_page(page: Page):
             
     return page # Fallback
 
+async def handle_adzuna_to_employer_transition(page: Page):
+    """
+    Forces the bot to jump from the Adzuna 'Hallway' to the 
+    real Employer 'Office' in the new tab.
+    """
+    print("🕵️ [UNIVERSAL-PILOT] Adzuna hallway detected. Bypassing registration...")
+    
+    # 1. Logic to click the 'Apply' button that opens a NEW TAB
+    # This specifically looks for the button that takes you to the external site
+    apply_selectors = [
+        'button:has-text("Apply")', 
+        'button:has-text("Bewerben")', 
+        'a:has-text("Apply on company site")',
+        'a:has-text("View job")',
+        'a:has-text("Original-Anzeige")'
+    ]
+    
+    try:
+        # 2. CAPTURE THE NEW TAB: This waits for the popup to trigger
+        async with page.context.expect_popup() as popup_info:
+            found = False
+            for selector in apply_selectors:
+                if await page.is_visible(selector, timeout=2000):
+                    print(f"✅ [UNIVERSAL-PILOT] Clicking Adzuna transition button: {selector}")
+                    await page.click(selector)
+                    found = True
+                    break
+            if not found:
+                print("⚠️ [UNIVERSAL-PILOT] No transition button found on Adzuna page.")
+                return page
+        
+        # 3. SWITCH FOCUS: Define the new page as the primary target
+        employer_page = await popup_info.value
+        await employer_page.wait_for_load_state("networkidle")
+        
+        print(f"🚀 [UNIVERSAL-PILOT] Successfully reached Employer Site: {employer_page.url}")
+        
+        # 4. CLOSE THE TRAP: Close the old Adzuna tab so we don't look at it anymore
+        try:
+            await page.close()
+            print("🗑️ [UNIVERSAL-PILOT] Parent Adzuna page closed.")
+        except:
+            print("⚠️ [UNIVERSAL-PILOT] Failed to close parent page.")
+            
+        return employer_page # Form filling will now happen here
+        
+    except Exception as e:
+        print(f"⚠️ [UNIVERSAL-PILOT] Failed to reach employer site: {str(e)}")
+        return page
+
 async def autofill_universal_form(
     page: Page, 
     job_id: str, 
@@ -135,30 +199,9 @@ async def autofill_universal_form(
     # 1. Scrape with Firecrawl
     job_url = job_details.get('job_url', '')
     
-    # --- Adzuna Bypass Logic ---
-    if "adzuna" in job_url.lower():
-        print("🕵️ [UNIVERSAL-PILOT] Adzuna landing page detected. Navigating to company site...")
-        try:
-            await page.goto(job_url, wait_until="networkidle")
-            # Try common Adzuna "Apply" buttons (English & German)
-            adzuna_apply_selectors = [
-                 'a:has-text("Apply on company site")',
-                 'a:has-text("View job")',
-                 'a:has-text("Original-Anzeige")',
-                 'a:has-text("Auf Arbeitgeber-Website bewerben")',
-                 'a:has-text("Zum Stellenangebot")',
-                 '.apply-button',
-                 '#apply_button'
-            ]
-            for selector in adzuna_apply_selectors:
-                locator = page.locator(selector).first
-                if await locator.count() > 0:
-                    print(f"✅ [UNIVERSAL-PILOT] Clicking Adzuna redirect: {selector}")
-                    async with page.expect_navigation(wait_until="networkidle", timeout=15000):
-                        await locator.click()
-                    break
-        except Exception as e:
-            print(f"⚠️ [UNIVERSAL-PILOT] Adzuna bypass failed: {e}")
+    # --- Adzuna Bypass Logic (Refined) ---
+    if "adzuna" in job_url.lower() or "adzuna" in page.url.lower():
+        page = await handle_adzuna_to_employer_transition(page)
     # ---------------------------
 
     scrape_res = scrape_job_form(page.url if "adzuna" in job_url.lower() else job_url)
@@ -188,17 +231,17 @@ async def autofill_universal_form(
                 import json
                 print(f"DEBUG_CV_JSON: {json.dumps(struct_res.data)}")
                 
-                # Correct path based on Run #6 logs:
+                # Correct nested formatting based on Run #8 requirements:
                 cv_record = struct_res.data[0] if isinstance(struct_res.data, list) else struct_res.data
-                raw_parsed_data = cv_record.get("parsed_data") or {}
-                if isinstance(raw_parsed_data, str):
-                    raw_parsed_data = json.loads(raw_parsed_data)
+                parsed = cv_record.get('parsed_data', {})
+                if isinstance(parsed, str):
+                    import json
+                    parsed = json.loads(parsed)
                 
-                # Use contact_info mapping as requested by user
-                contact = raw_parsed_data.get("contact_info", {})
-                email = contact.get("email")
-                full_name = contact.get("name")
-                phone = contact.get("phone")
+                contact = parsed.get('contact_info', {})
+                email = contact.get('email')
+                full_name = contact.get('name')
+                phone = contact.get('phone')
                 
                 # STRICT ABORT: No placeholders allowed
                 if not email:
@@ -305,7 +348,8 @@ async def autofill_universal_form(
             "Apply", "Submit", "Send Application", 
             "Bewerben", "Absenden", "Einreichen", "Bewerbung absenden", "Senden",
             "Bewerbung einreichen", "Absenden", "Unterlagen senden", "Einreichen",
-            "Unterlagen einsenden", "Jetzt bewerben",
+            "Unterlagen einsenden", "Jetzt bewerben", "Unterlagen absenden",
+            "Bewerbung einreichen",
             "Postuler", "Envoyer"
         ]
         for btn_text in text_buttons:

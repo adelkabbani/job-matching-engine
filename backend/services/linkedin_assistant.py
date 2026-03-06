@@ -492,11 +492,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         print(f"🔍 Searching for Easy Apply button...")
         await page.screenshot(path=os.path.join(job_log_dir, "0.6_before_button_check.png"), timeout=60000)
         
-        # Enable Tracing (GUARDED)
-        try:
-            await _browser_context.tracing.start(screenshots=True, snapshots=True, sources=True)
-        except Exception as e:
-            print(f"⚠️ [ASSISTANT] Tracing start ignored: {e}")
+        # Tracing removed to prevent 'Tracing has been already started' crash
         
         # Fallback selectors for Easy Apply button
         selectors = [

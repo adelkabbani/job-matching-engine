@@ -35,6 +35,7 @@ async def navigate_to_final_application_page(page: Page):
     Step 1: Click 'No thank you' / Skip prompts
     Step 2: ONLY click the final redirect 'Apply' / 'Bewerben' button
     Step 3: Wait for load + stabilization
+    Returns: The Page object to use (might be a new tab).
     """
     # 1. STEP 1: Skip Modals/Popups/Prompts
     skip_selectors = [
@@ -108,12 +109,12 @@ async def navigate_to_final_application_page(page: Page):
                     print("⚠️ Timeout waiting for networkidle, proceeding anyway.")
                 
                 await asyncio.sleep(5) # Stabilization sleep for JS redirects
-                return # Successfully escaped
+                return page # Successfully escaped, return the active page
         except Exception as e:
             print(f"⚠️ [SKIP-SEQ] Redirect failed for {selector}: {e}")
-            # Log failure HTML for diagnosis
-            with open(os.path.join(LOGS_DIR, "hallway_fail.html"), "w", encoding="utf-8") as f:
-                f.write(await page.content())
+            # ... (error logging)
+            
+    return page # Fallback
 
 async def autofill_universal_form(
     page: Page, 
@@ -129,7 +130,7 @@ async def autofill_universal_form(
     print(f"🚀 [UNIVERSAL-PILOT] Starting Direct Apply for: {job_details.get('title')}")
     
     # 0. Navigate 'Hallways' (Adzuna register popups, etc.)
-    await navigate_to_final_application_page(page)
+    page = await navigate_to_final_application_page(page)
     
     # 1. Scrape with Firecrawl
     job_url = job_details.get('job_url', '')

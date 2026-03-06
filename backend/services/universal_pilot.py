@@ -11,44 +11,68 @@ async def navigate_to_final_application_page(page: Page):
     """
     Handles the 'hallway' screens like Adzuna's email registration 
     and 'No thank you' prompts before the real form.
+    Follows a strict 3-stage clinical sequence:
+    Step 1: Click 'No thank you' / Skip prompts
+    Step 2: ONLY click the final redirect 'Apply' / 'Bewerben' button
+    Step 3: Wait for load + stabilization
     """
-    # 1. Handle "Register your email" pop-ups / screens
+    # 1. STEP 1: Skip Modals/Popups/Prompts
     skip_selectors = [
         'button:has-text("No thank you")', 
         'button:has-text("Continue without job email")',
-        'button:has-text("Nein danke")', # German Support
-        '#skip-email-reg',
+        'button:has-text("Nein danke")', 
+        'a:has-text("No thanks")',
+        'button:has-text("Skip")',
+        'button[aria-label="Close"]',
         '.close-modal',
-        'button[aria-label="Close"]'
+        '.modal-close',
+        '#skip-email-reg'
     ]
-    
     for selector in skip_selectors:
         try:
             if await page.is_visible(selector, timeout=2000):
                 await page.click(selector)
-                print(f"✅ Bypassed prompt using: {selector}")
-        except:
-            continue
+                print(f"✅ [SKIP-SEQ] Bypassed prompt using: {selector}")
+                await asyncio.sleep(1)
+        except: pass
 
-    # 2. Find and click the FINAL 'Apply' button
-    apply_selectors = [
-        'button:has-text("Apply")',
+    # 2. STEP 2: The Actionable Redirect Button
+    redirect_selectors = [
+        'a:has-text("Apply")',
         'a:has-text("Apply on company site")',
-        'button:has-text("Bewerben")', # German Support
-        'a:has-text("Original-Anzeige")',
+        'a:has-text("Bewerben")',
         'a:has-text("Auf Arbeitgeber-Website bewerben")',
-        '.btn-apply-now'
+        'a:has-text("View job")',
+        'a:has-text("Original-Anzeige")',
+        'a.adzuna-apply-button',
+        'button:has-text("Apply")',
+        'button:has-text("Bewerben")'
     ]
     
-    for selector in apply_selectors:
+    for selector in redirect_selectors:
         try:
             if await page.is_visible(selector, timeout=3000):
-                await page.click(selector)
-                await page.wait_for_load_state("networkidle")
-                return True
-        except:
-            continue
-    return False
+                print(f"✅ [SKIP-SEQ] Clicking primary redirect: {selector}")
+                # VISION DEBUG: Save proof before escape
+                await page.screenshot(path=os.path.join(LOGS_DIR, "hallway_escape_attempt.png"))
+                
+                async with page.expect_navigation(timeout=20000):
+                    await page.click(selector)
+                
+                # 3. STEP 3: Mandatory Waiting
+                print(f"🚀 [SKIP-SEQ] Escaped hallway. Stabilizing...")
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except:
+                    print("⚠️ Timeout waiting for networkidle, proceeding anyway.")
+                
+                await asyncio.sleep(5) # Stabilization sleep for JS redirects
+                return # Successfully escaped
+        except Exception as e:
+            print(f"⚠️ [SKIP-SEQ] Redirect failed for {selector}: {e}")
+            # Log failure HTML for diagnosis
+            with open(os.path.join(LOGS_DIR, "hallway_fail.html"), "w", encoding="utf-8") as f:
+                f.write(await page.content())
 
 async def autofill_universal_form(
     page: Page, 
@@ -106,27 +130,66 @@ async def autofill_universal_form(
     else:
         fields = scrape_res["fields"]
     
-    # 2. Get User Data
-    profile_res = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
-    if not profile_res.data:
-        return {"status": "error", "message": "User profile not found."}
-    profile = profile_res.data
+    # 2. Get Real User Data from cv_structured_data
+    # Use real email/name/phone from the structured CV data
+    try:
+        # 2.1 Find latest CV document
+        docs = supabase.table("documents").select("id").eq("user_id", user_id).eq("doc_type", "cv").order("created_at", desc=True).limit(1).execute()
+        
+        parsed_personal_info = {}
+        if docs.data:
+            cv_id = docs.data[0]["id"]
+            # 2.2 Get parsed data
+            struct_res = supabase.table("cv_structured_data").select("parsed_data").eq("document_id", cv_id).execute()
+            if struct_res.data:
+                # CLINICAL: Be extremely descriptive about what we find
+                raw_parsed_data = struct_res.data[0].get("parsed_data") or {}
+                if isinstance(raw_parsed_data, str):
+                    import json
+                    raw_parsed_data = json.loads(raw_parsed_data)
+                
+                parsed_personal_info = raw_parsed_data.get("personal_info", {})
+                print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {parsed_personal_info.get('email', 'Email MISSING in JSON')}")
+            else:
+                print(f"⚠️ [UNIVERSAL-PILOT] FAILED: No structured record for CV {cv_id}")
+            
+        # 2.3 Fallback to profile if CV data missing
+        profile_res = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+        profile = profile_res.data or {}
+        
+        # Merge hierarchy: Parsed CV > Profile Profile
+        user_data = {
+            "full_name": parsed_personal_info.get("full_name") or profile.get("full_name", ""),
+            "email": parsed_personal_info.get("email") or profile.get("email", ""),
+            "phone": parsed_personal_info.get("phone") or profile.get("phone_number", "")
+        }
+        
+    except Exception as e:
+        print(f"⚠️ [UNIVERSAL-PILOT] Failed to fetch user data: {e}")
+        return {"status": "error", "message": f"User data retrieval failed: {e}"}
     
     # 3. Setup Log Dir
     job_log_dir = os.path.join(LOGS_DIR, str(job_id))
     os.makedirs(job_log_dir, exist_ok=True)
     
+    # Step counter for Vision Debugging
+    step_count = 0
+
     try:
         # 4. Fill Main Fields
         # Full Name
         full_name_selector = fields.get('full_name_field') or 'input[name*="name"], input[placeholder*="Name"], #name, #full_name'
         if full_name_selector:
-            await _fill_field(page, full_name_selector, profile.get('full_name', ''), optional=True)
+            step_count += 1
+            await _fill_field(page, full_name_selector, user_data.get('full_name', ''), optional=True)
+            await page.screenshot(path=os.path.join(job_log_dir, f"step_{step_count}_name.png"))
             
         # Email
         email_selector = fields.get('email_field') or 'input[type="email"], input[name*="email"], #email'
         if email_selector:
-            await _fill_field(page, email_selector, profile.get('email', ''), optional=True)
+            step_count += 1
+            await _fill_field(page, email_selector, user_data.get('email', ''), optional=True)
+            await page.screenshot(path=os.path.join(job_log_dir, f"step_{step_count}_email.png"))
             
         # Resume Upload
         resume_selector = fields.get('resume_upload_selector') or 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv'
@@ -158,10 +221,11 @@ async def autofill_universal_form(
             'button[type="submit"]',
             'button:has-text("Apply")',
             'button:has-text("Submit")',
-            'button:has-text("Send Application")',
+            'button:has-text("Senden")',
+            'button:has-text("Bewerben")',
             'button:has-text("Bewerbung absenden")',
-            '.submit-button',
-            '#submit_button',
+            '[id*="submit"]',
+            '[class*="submit"]',
             fields.get('submit_button')
         ]
         
@@ -176,6 +240,7 @@ async def autofill_universal_form(
         text_buttons = [
             "Apply", "Submit", "Send Application", 
             "Bewerben", "Absenden", "Einreichen", "Bewerbung absenden", "Senden",
+            "Bewerbung einreichen", "Absenden", "Unterlagen senden", "Einreichen",
             "Postuler", "Envoyer"
         ]
         for btn_text in text_buttons:
@@ -203,7 +268,12 @@ async def autofill_universal_form(
                     continue
                 
         if not success_click:
-            return {"status": "error", "message": "Could not find a valid submit button after multiple attempts."}
+            # VISION DEBUG: Save HTML Source Code if no button found
+            print("❌ [VISION-DEBUG] No submit button found. Saving HTML source...")
+            html_dbg_path = os.path.join(job_log_dir, "debug_no_button.html")
+            with open(html_dbg_path, "w", encoding="utf-8") as f:
+                f.write(await page.content())
+            return {"status": "error", "message": f"Could not find a valid submit button. Debug: {html_dbg_path}"}
 
         await asyncio.sleep(5)
             
@@ -229,10 +299,10 @@ async def _execute_heuristic_scan(page: Page) -> Dict:
     Used when Firecrawl is unavailable.
     """
     fields = {
-        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], input[placeholder*="Vorname"], input[placeholder*="Nachname"], input[aria-label*="Name"], #name, #full_name',
-        "email_field": 'input[type="email"], input[name*="email"], input[name*="mail"], input[title*="Email"], #email',
+        "full_name_field": 'input[name*="name"], input[placeholder*="Name"], input[placeholder*="Vorname"], input[placeholder*="Nachname"], input[aria-label*="Name"], #name, #full_name, #vorname, #nachname',
+        "email_field": 'input[type="email"], input[name*="email"], input[name*="mail"], input[title*="Email"], input[placeholder*="E-Mail"], #email',
         "resume_upload_selector": 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv',
-        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit"), button:has-text("Bewerbung absenden")',
+        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit"), button:has-text("Senden"), button:has-text("Bewerbung einreichen"), button:has-text("Bewerben")',
         "additional_fields": []
     }
     return fields

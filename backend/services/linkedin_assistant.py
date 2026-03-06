@@ -317,7 +317,10 @@ async def capture_job_details(job_id: str, user_id: str, supabase) -> Dict:
     if not res.data:
         return {"status": "error", "message": "Job not found."}
     
-    job_url = res.data.get('job_url') or res.data.get('raw_data', {}).get('url')
+    # HARDENED: Prevent NoneType crash if raw_data is missing/null
+    job_data_obj = res.data or {}
+    job_url = job_data_obj.get('job_url') or (job_data_obj.get('raw_data') or {}).get('url')
+    
     if not job_url:
          return {"status": "error", "message": "Job URL not found."}
     
@@ -394,6 +397,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
     profile_res = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
     
     if not job_res.data or not profile_res.data:
+        print(f"❌ [ASSISTANT] Job {job_id} or Profile {user_id} NOT found in DB. Aborting.")
         return {"status": "error", "message": "Job or Profile data missing."}
         
     job = job_res.data
@@ -410,7 +414,8 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         await _rate_limit_check()
         
         # 1.1 Extract basic job info for logic
-        job_url = job.get('url') or job.get('raw_data', {}).get('url')
+        # HARDENED: Prevent NoneType crash if raw_data is missing/null
+        job_url = job.get('url') or (job.get('raw_data') or {}).get('url')
         company_name = job.get("company", "Unknown")
         
         if not job_url:
@@ -789,7 +794,7 @@ async def _fill_modal_fields(page: Page, profile: Dict, supabase, user_id: str, 
     # 1. Fetch Question Bank once
     qb_res = supabase.table("linkedin_question_bank").select("*").eq("user_id", user_id).execute()
     qb_data = qb_res.data or []
-    qb_questions = [row['question_text'] for row in qb_data]
+    qb_questions = [row.get('question_text') for row in qb_data if row.get('question_text')]
     
     def _calc_exp() -> str:
         work_exp = profile.get('work_experience', [])

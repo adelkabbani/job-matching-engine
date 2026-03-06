@@ -209,10 +209,10 @@ def search_jobs(query: str, location: str = "Berlin") -> List[Dict]:
             for result in page_results:
                 job = {
                     'title': result.get('title'),
-                    'company': result.get('company', {}).get('display_name'),
+                    'company': (result.get('company') or {}).get('display_name'),
                     'description': result.get('description'),
                     'url': result.get('redirect_url'),
-                    'location': result.get('location', {}).get('display_name'),
+                    'location': (result.get('location') or {}).get('display_name'),
                     'remote_ok': 'remote' in (result.get('description') or '').lower() or 'remote' in (result.get('title') or '').lower(),
                     'language': 'english', 
                     'experience_level': 'mid', 
@@ -294,7 +294,7 @@ def discover_and_score_jobs(user_id: str, supabase) -> Dict:
                 with open(profile_path, "r", encoding="utf-8") as f:
                     profile_data = json.load(f)
                     # Support both list formats and string formats
-                    queries = profile_data.get("preferences", {}).get("search_queries", [])
+                    queries = (profile_data.get("preferences") or {}).get("search_queries", [])
                     if queries:
                         if isinstance(queries, str):
                             user_filters["role_keywords"] = [queries]

@@ -489,7 +489,8 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
                 print(f"🛑 [HEARTBEAT] Job is closed for {company_name}. Skipping.")
                 return {"status": "error", "message": "Job is no longer accepting applications."}
 
-        print(f"🔍 Searching for Easy Apply button...")
+        print(f"🔍 Searching for Easy Apply button (Waiting 5s for stabilization)...")
+        await asyncio.sleep(5)
         await page.screenshot(path=os.path.join(job_log_dir, "0.6_before_button_check.png"), timeout=60000)
         
         # Tracing removed to prevent 'Tracing has been already started' crash
@@ -497,6 +498,9 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         # Fallback selectors for Easy Apply button
         selectors = [
             'button[data-view-name="job-apply-button"]', 
+            'button.jobs-apply-button',
+            'button[aria-label*="Easy Apply"]',
+            'span:has-text("Easy Apply")',
             '.jobs-apply-button--top-card button[aria-label*="Easy Apply"]',
             '.jobs-apply-button--top-card button:has-text("Easy Apply")',
             'button.jobs-apply-button[aria-label*="Easy Apply"]',

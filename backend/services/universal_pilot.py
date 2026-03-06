@@ -16,6 +16,7 @@ async def dismiss_cookie_banners(page: Page):
         'button:has-text("Zustimmen")',
         'button:has-text("Allow all")',
         'button:has-text("OK")',
+        '#cookiescript_accept',
         '#onetrust-accept-btn-handler',
         '.cookie-banner__accept'
     ]
@@ -163,18 +164,29 @@ async def handle_adzuna_to_employer_transition(page: Page):
         
         # 3. SWITCH FOCUS: Define the new page as the primary target
         employer_page = await popup_info.value
-        await employer_page.wait_for_load_state("networkidle")
+        print(f"🚀 [UNIVERSAL-PILOT] New tab detected: {employer_page.url}")
         
-        print(f"🚀 [UNIVERSAL-PILOT] Successfully reached Employer Site: {employer_page.url}")
+        # 4. MONITOR REDIRECTS: Wait for Adzuna/Portal exit
+        print(f"🕵️ [UNIVERSAL-PILOT] Waiting for portal exit...")
+        max_wait = 20
+        for i in range(max_wait):
+            current_url = employer_page.url.lower()
+            if "adzuna" not in current_url and "stepstone" not in current_url:
+                print(f"✅ [SENTINEL] Reached target employer site: {employer_page.url}")
+                break
+            await asyncio.sleep(1)
+            if i % 5 == 0: print(f"⏳ [SENTINEL] Still on portal redirect... ({i}s)")
+
+        await employer_page.wait_for_load_state("networkidle", timeout=20000)
         
-        # 4. CLOSE THE TRAP: Close the old Adzuna tab so we don't look at it anymore
+        # 5. CLOSE THE HALLWAY: Close the old tab so we stay focused
         try:
             await page.close()
-            print("🗑️ [UNIVERSAL-PILOT] Parent Adzuna page closed.")
-        except:
-            print("⚠️ [UNIVERSAL-PILOT] Failed to close parent page.")
+            print("🗑️ [UNIVERSAL-PILOT] Parent Adzuna hallway closed.")
+        except Exception as e:
+            print(f"⚠️ [UNIVERSAL-PILOT] Parent close warning: {e}")
             
-        return employer_page # Form filling will now happen here
+        return employer_page 
         
     except Exception as e:
         print(f"⚠️ [UNIVERSAL-PILOT] Failed to reach employer site: {str(e)}")
@@ -232,20 +244,25 @@ async def autofill_universal_form(
                 print(f"DEBUG_CV_JSON: {json.dumps(struct_res.data)}")
                 
                 # Correct nested formatting based on Run #8 requirements:
+                # STRICT NESTED PATH: parsed_data -> contact_info -> email
                 cv_record = struct_res.data[0] if isinstance(struct_res.data, list) else struct_res.data
-                parsed = cv_record.get('parsed_data', {})
-                if isinstance(parsed, str):
-                    import json
-                    parsed = json.loads(parsed)
+                parsed_col = cv_record.get('parsed_data', {})
                 
-                contact = parsed.get('contact_info', {})
+                # Handle cases where column content is a stringified JSON
+                idp = parsed_col
+                if isinstance(idp, str):
+                    import json
+                    idp = json.loads(idp)
+                
+                # Double-check for recursive 'parsed_data' key inside the object
+                inner_parsed = idp.get('parsed_data', idp)
+                contact = inner_parsed.get('contact_info', {})
                 email = contact.get('email')
                 full_name = contact.get('name')
                 phone = contact.get('phone')
                 
-                # STRICT ABORT: No placeholders allowed
                 if not email:
-                    print("❌ [BLACK-BOX] CRITICAL: Email missing in CV contact_info. ABORTING.")
+                    print(f"❌ [BLACK-BOX] CRITICAL: Email missing at expected path. Keys found: {list(inner_parsed.keys())}")
                     return {"status": "error", "message": "Email missing from contact_info in structured CV data."}
                 
                 print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {email} ({full_name})")
@@ -331,6 +348,11 @@ async def autofill_universal_form(
             'button:has-text("Senden")',
             'button:has-text("Bewerben")',
             'button:has-text("Bewerbung absenden")',
+            'button.job-ad-display-1lqk1u2',
+            'button.job-ad-display-1jtwxyw',
+            'button.job-ad-display-gro348',
+            'button#submit_app',
+            'button.submit-button',
             '[id*="submit"]',
             '[class*="submit"]',
             fields.get('submit_button')
@@ -411,7 +433,7 @@ async def _execute_heuristic_scan(page: Page) -> Dict:
         "full_name_field": 'input[name*="name"], input[placeholder*="Name"], input[placeholder*="Vorname"], input[placeholder*="Nachname"], input[aria-label*="Name"], #name, #full_name, #vorname, #nachname',
         "email_field": 'input[type="email"], input[name*="email"], input[name*="mail"], input[title*="Email"], input[placeholder*="E-Mail"], #email',
         "resume_upload_selector": 'input[type="file"], input[name*="resume"], input[name*="cv"], #resume, #cv',
-        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit"), button:has-text("Senden"), button:has-text("Bewerbung einreichen"), button:has-text("Bewerben")',
+        "submit_button": 'button[type="submit"], button:has-text("Apply"), button:has-text("Submit"), button:has-text("Senden"), button:has-text("Bewerbung einreichen"), button:has-text("Bewerben"), button.job-ad-display-1lqk1u2, button.job-ad-display-1jtwxyw, button#submit_app',
         "additional_fields": []
     }
     return fields

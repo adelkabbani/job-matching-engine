@@ -59,8 +59,17 @@ async def navigate_to_final_application_page(page: Page):
                 async with page.expect_navigation(timeout=20000):
                     await page.click(selector)
                 
-                # 3. STEP 3: Mandatory Waiting
-                print(f"🚀 [SKIP-SEQ] Escaped hallway. Stabilizing...")
+                # 3. STEP 3: URL SENTINEL - Wait for Adzuna Exit
+                print(f"🚀 [SKIP-SEQ] Redirect clicked. Monitoring URL Sentinel...")
+                max_wait = 30
+                for i in range(max_wait):
+                    if "adzuna" not in page.url.lower():
+                        print(f"✅ [SENTINEL] Escaped to employer domain: {page.url}")
+                        break
+                    await asyncio.sleep(1)
+                    if i % 5 == 0: print(f"⏳ [SENTINEL] Still on Adzuna... ({i}s)")
+
+                # Mandatory load and stabilization
                 try:
                     await page.wait_for_load_state("networkidle", timeout=15000)
                 except:
@@ -142,16 +151,26 @@ async def autofill_universal_form(
             # 2.2 Get parsed data
             struct_res = supabase.table("cv_structured_data").select("parsed_data").eq("document_id", cv_id).execute()
             if struct_res.data:
-                # CLINICAL: Be extremely descriptive about what we find
+                # BLACK BOX LOGGING: See the raw object
+                import json
+                print(f"DEBUG_CV_JSON: {json.dumps(struct_res.data)}")
+                
                 raw_parsed_data = struct_res.data[0].get("parsed_data") or {}
                 if isinstance(raw_parsed_data, str):
-                    import json
                     raw_parsed_data = json.loads(raw_parsed_data)
                 
                 parsed_personal_info = raw_parsed_data.get("personal_info", {})
-                print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {parsed_personal_info.get('email', 'Email MISSING in JSON')}")
+                email = parsed_personal_info.get('email')
+                
+                # STRICT ABORT: No placeholders allowed
+                if not email:
+                    print("❌ [BLACK-BOX] CRITICAL: Email missing in CV data. ABORTING.")
+                    return {"status": "error", "message": "Email missing from structured CV data. Please re-parse your CV."}
+                
+                print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {email}")
             else:
                 print(f"⚠️ [UNIVERSAL-PILOT] FAILED: No structured record for CV {cv_id}")
+                return {"status": "error", "message": "No structured CV data found. Please parse your CV first."}
             
         # 2.3 Fallback to profile if CV data missing
         profile_res = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
@@ -241,6 +260,7 @@ async def autofill_universal_form(
             "Apply", "Submit", "Send Application", 
             "Bewerben", "Absenden", "Einreichen", "Bewerbung absenden", "Senden",
             "Bewerbung einreichen", "Absenden", "Unterlagen senden", "Einreichen",
+            "Unterlagen einsenden", "Jetzt bewerben",
             "Postuler", "Envoyer"
         ]
         for btn_text in text_buttons:

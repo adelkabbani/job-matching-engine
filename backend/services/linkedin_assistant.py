@@ -415,7 +415,7 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
         
         # 1.1 Extract basic job info for logic
         # HARDENED: Prevent NoneType crash if raw_data is missing/null
-        job_url = job.get('url') or (job.get('raw_data') or {}).get('url')
+        job_url = job.get('job_url') or job.get('url') or (job.get('raw_data') or {}).get('url')
         company_name = job.get("company", "Unknown")
         
         if not job_url:

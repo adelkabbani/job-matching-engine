@@ -81,7 +81,7 @@ async def navigate_to_final_application_page(page: Page):
                 
                 # ADZUNA TAB STRATEGY: Switch to new tab and CLOSE original
                 try:
-                    async with page.context.expect_popup(timeout=8000) as popup_info:
+                    async with page.expect_popup(timeout=8000) as popup_info:
                         await page.click(selector)
                     new_page = await popup_info.value
                     print("🚪 [TAB-STRATEGY] Detected new tab. Switching focus and CLOSING parent.")
@@ -150,7 +150,7 @@ async def handle_adzuna_to_employer_transition(page: Page):
     
     try:
         # 2. CAPTURE THE NEW TAB: This waits for the popup to trigger
-        async with page.context.expect_popup() as popup_info:
+        async with page.expect_popup() as popup_info:
             found = False
             for selector in apply_selectors:
                 if await page.is_visible(selector, timeout=2000):
@@ -241,28 +241,22 @@ async def autofill_universal_form(
             if struct_res.data:
                 # BLACK BOX LOGGING: See the raw object
                 import json
-                print(f"DEBUG_CV_JSON: {json.dumps(struct_res.data)}")
-                
-                # Correct nested formatting based on Run #8 requirements:
                 # STRICT NESTED PATH: parsed_data -> contact_info -> email
-                cv_record = struct_res.data[0] if isinstance(struct_res.data, list) else struct_res.data
-                parsed_col = cv_record.get('parsed_data', {})
+                record = struct_res.data[0] if isinstance(struct_res.data, list) else struct_res.data
+                parsed_data = record.get('parsed_data', {})
                 
                 # Handle cases where column content is a stringified JSON
-                idp = parsed_col
-                if isinstance(idp, str):
+                if isinstance(parsed_data, str):
                     import json
-                    idp = json.loads(idp)
+                    parsed_data = json.loads(parsed_data)
                 
-                # Double-check for recursive 'parsed_data' key inside the object
-                inner_parsed = idp.get('parsed_data', idp)
-                contact = inner_parsed.get('contact_info', {})
+                contact = parsed_data.get('contact_info', {})
                 email = contact.get('email')
                 full_name = contact.get('name')
                 phone = contact.get('phone')
                 
                 if not email:
-                    print(f"❌ [BLACK-BOX] CRITICAL: Email missing at expected path. Keys found: {list(inner_parsed.keys())}")
+                    print(f"❌ [BLACK-BOX] CRITICAL: Email missing at expected path. Keys found: {list(parsed_data.keys())}")
                     return {"status": "error", "message": "Email missing from contact_info in structured CV data."}
                 
                 print(f"📚 [UNIVERSAL-PILOT] SUCCESS: Loaded real data for User ID {user_id}: {email} ({full_name})")

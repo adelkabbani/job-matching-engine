@@ -489,8 +489,13 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
                 print(f"🛑 [HEARTBEAT] Job is closed for {company_name}. Skipping.")
                 return {"status": "error", "message": "Job is no longer accepting applications."}
 
-        print(f"🔍 Searching for Easy Apply button (Waiting 5s for stabilization)...")
-        await asyncio.sleep(5)
+        print(f"🔍 Searching for Easy Apply button (Deep Wait 10s)...")
+        try:
+            await page.wait_for_selector("button.jobs-apply-button", timeout=10000)
+        except:
+            print("⏳ 'Easy Apply' button selector not found via deep wait, continuing with fallbacks...")
+            
+        await asyncio.sleep(2) # Final stabilization
         await page.screenshot(path=os.path.join(job_log_dir, "0.6_before_button_check.png"), timeout=60000)
         
         # Tracing removed to prevent 'Tracing has been already started' crash

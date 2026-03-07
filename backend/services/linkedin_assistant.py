@@ -491,7 +491,8 @@ async def autofill_easy_apply_modal(job_id: str, user_id: str, supabase, dry_run
 
         print(f"🔍 Searching for Easy Apply button (Deep Wait 10s)...")
         try:
-            await page.wait_for_selector("button.jobs-apply-button", timeout=10000)
+            # Expanded wait list for lazy-loading buttons
+            await page.wait_for_selector("button.jobs-apply-button, .jobs-apply-button--top-card, button[aria-label*='Easy Apply']", timeout=10000)
         except:
             print("⏳ 'Easy Apply' button selector not found via deep wait, continuing with fallbacks...")
             

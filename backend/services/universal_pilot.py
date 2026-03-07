@@ -138,6 +138,12 @@ async def handle_adzuna_to_employer_transition(page: Page):
     """
     print("🕵️ [UNIVERSAL-PILOT] Adzuna hallway detected. Bypassing registration...")
     
+    # 0. ADZUNA COOKIE BUSTER: Clear the path before transition
+    try:
+        await page.click('#cookiescript_accept, button:has-text("Accept"), button:has-text("Alle akzeptieren")', timeout=3000)
+        print("🍪 [COOKIE-BUSTER] Adzuna banner cleared.")
+    except: pass
+    
     # 1. Logic to click the 'Apply' button that opens a NEW TAB
     # This specifically looks for the button that takes you to the external site
     apply_selectors = [
